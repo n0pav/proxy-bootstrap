@@ -1,5 +1,7 @@
 # Proxy Bootstrap for Ubuntu VPS
 
+[**English 🇺🇸**](README.md) / [**Русский 🇷🇺**](README.ru.md)
+
 Production-ready bootstrap for a clean Ubuntu `22.04` or `24.04` VPS that installs:
 
 - `VLESS + Reality` on `443/tcp`

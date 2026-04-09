@@ -636,7 +636,35 @@ enable_services() {
   systemctl is-active --quiet sing-box || fatal "sing-box service failed to start."
 }
 
+wait_for_service_readiness() {
+  local attempts=15
+  local tcp_ready=false
+  local udp_ready=false
+
+  log "Waiting for sing-box ports to start listening."
+
+  for ((i = 1; i <= attempts; i++)); do
+    if ss -H -ltn "( sport = :$VLESS_PORT )" 2>/dev/null | grep -q ":$VLESS_PORT"; then
+      tcp_ready=true
+    fi
+
+    if ss -H -lun "( sport = :$HYSTERIA_PORT )" 2>/dev/null | grep -q ":$HYSTERIA_PORT"; then
+      udp_ready=true
+    fi
+
+    if "$tcp_ready" && "$udp_ready"; then
+      log "sing-box ports are ready."
+      return 0
+    fi
+
+    sleep 1
+  done
+
+  log "Port readiness wait timed out; running healthcheck anyway."
+}
+
 run_healthcheck() {
+  wait_for_service_readiness
   log "Running health check."
   VLESS_PORT="$VLESS_PORT" HYSTERIA_PORT="$HYSTERIA_PORT" "$SCRIPT_DIR/scripts/healthcheck.sh"
 }
