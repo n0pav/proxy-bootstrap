@@ -29,17 +29,23 @@ sudo bash install.sh
 
 Обязательные переменные:
 
-- `HYSTERIA_DOMAIN`
-- `LETSENCRYPT_EMAIL`
-- `REALITY_SERVER_NAME`
+- `ENABLE_VLESS`
+- `ENABLE_HYSTERIA`
 
 Важные необязательные переменные:
 
+- `ENABLE_VLESS` / `ENABLE_HYSTERIA`: выбрать режим `только VLESS`, `только Hysteria2` или `оба сразу`
 - `PRIMARY_INTERFACE`: вручную задать исходящий интерфейс для NAT
 - `SERVER_IPV4`: вручную задать IPv4 сервера, если автоопределение не подходит
 - `FIREWALL_BACKEND`: `auto`, `ufw`, `iptables`, `none`
 - `CERTBOT_STAGING`: `true` для тестовых прогонов без риска упереться в rate limits Let's Encrypt
 - `VLESS_UUID`, `REALITY_PRIVATE_KEY`, `REALITY_PUBLIC_KEY`, `REALITY_SHORT_ID`, `HYSTERIA_PASSWORD`: заранее заданные секреты вместо автогенерации
+
+Зависимости по режимам:
+
+- если `ENABLE_VLESS=true`, обязателен `REALITY_SERVER_NAME`
+- если `ENABLE_HYSTERIA=true`, обязательны `HYSTERIA_DOMAIN` и `LETSENCRYPT_EMAIL`
+- хотя бы один из двух флагов должен быть `true`
 
 Состояние установки и сгенерированные секреты хранятся в `/etc/sing-box/bootstrap.env`.
 
@@ -64,6 +70,23 @@ sudo bash install.sh
 - запускает `scripts/healthcheck.sh`
 
 Скрипт идемпотентный: повторный запуск должен приводить систему к нужному состоянию, а не ломать существующую установку.
+
+Примеры режимов:
+
+```env
+ENABLE_VLESS=true
+ENABLE_HYSTERIA=false
+```
+
+```env
+ENABLE_VLESS=false
+ENABLE_HYSTERIA=true
+```
+
+```env
+ENABLE_VLESS=true
+ENABLE_HYSTERIA=true
+```
 
 ## Обновление
 

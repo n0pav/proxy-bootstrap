@@ -29,17 +29,23 @@ Generated client links are written to `/etc/sing-box/client-links.txt`.
 
 Required variables:
 
-- `HYSTERIA_DOMAIN`
-- `LETSENCRYPT_EMAIL`
-- `REALITY_SERVER_NAME`
+- `ENABLE_VLESS`
+- `ENABLE_HYSTERIA`
 
 Important optional variables:
 
+- `ENABLE_VLESS` / `ENABLE_HYSTERIA`: choose `VLESS only`, `Hysteria2 only`, or `both`
 - `PRIMARY_INTERFACE`: override auto-detected outbound interface for NAT
 - `SERVER_IPV4`: override auto-detected public IPv4
 - `FIREWALL_BACKEND`: `auto`, `ufw`, `iptables`, `none`
 - `CERTBOT_STAGING`: set to `true` during dry runs to avoid Let's Encrypt rate limits
 - `VLESS_UUID`, `REALITY_PRIVATE_KEY`, `REALITY_PUBLIC_KEY`, `REALITY_SHORT_ID`, `HYSTERIA_PASSWORD`: pre-seed secrets instead of generating them
+
+Protocol-specific requirements:
+
+- when `ENABLE_VLESS=true`, `REALITY_SERVER_NAME` is required
+- when `ENABLE_HYSTERIA=true`, `HYSTERIA_DOMAIN` and `LETSENCRYPT_EMAIL` are required
+- at least one of the two protocol flags must be `true`
 
 State for generated secrets and managed UFW changes is stored in `/etc/sing-box/bootstrap.env`.
 
@@ -64,6 +70,23 @@ What `install.sh` does:
 - runs `scripts/healthcheck.sh`
 
 The script is idempotent. Re-running it should reconcile the install instead of breaking it.
+
+Example protocol modes:
+
+```env
+ENABLE_VLESS=true
+ENABLE_HYSTERIA=false
+```
+
+```env
+ENABLE_VLESS=false
+ENABLE_HYSTERIA=true
+```
+
+```env
+ENABLE_VLESS=true
+ENABLE_HYSTERIA=true
+```
 
 ## Update
 

@@ -53,7 +53,7 @@ remove_ufw_rule_if_added() {
   local rule="$1"
   local added="$2"
 
-  if [ -n "$added" ] && ufw_is_active; then
+  if [ -n "$added" ] && command -v ufw >/dev/null 2>&1; then
     log "Removing UFW rule: $rule"
     ufw --force delete allow "$rule" || true
   fi

@@ -7,6 +7,8 @@ ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 
 INPUT_VLESS_PORT="${VLESS_PORT:-}"
 INPUT_HYSTERIA_PORT="${HYSTERIA_PORT:-}"
+INPUT_ENABLE_VLESS="${ENABLE_VLESS:-}"
+INPUT_ENABLE_HYSTERIA="${ENABLE_HYSTERIA:-}"
 
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -17,6 +19,15 @@ fi
 
 VLESS_PORT="${INPUT_VLESS_PORT:-${VLESS_PORT:-443}}"
 HYSTERIA_PORT="${INPUT_HYSTERIA_PORT:-${HYSTERIA_PORT:-8443}}"
+ENABLE_VLESS="${INPUT_ENABLE_VLESS:-${ENABLE_VLESS:-true}}"
+ENABLE_HYSTERIA="${INPUT_ENABLE_HYSTERIA:-${ENABLE_HYSTERIA:-true}}"
+
+bool_is_true() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 check_service() {
   if systemctl is-active --quiet sing-box; then
@@ -48,9 +59,20 @@ check_udp_port() {
 }
 
 main() {
+  if ! bool_is_true "$ENABLE_VLESS" && ! bool_is_true "$ENABLE_HYSTERIA"; then
+    echo "FAIL: both ENABLE_VLESS and ENABLE_HYSTERIA are disabled"
+    return 1
+  fi
+
   check_service
-  check_tcp_port "$VLESS_PORT"
-  check_udp_port "$HYSTERIA_PORT"
+
+  if bool_is_true "$ENABLE_VLESS"; then
+    check_tcp_port "$VLESS_PORT"
+  fi
+
+  if bool_is_true "$ENABLE_HYSTERIA"; then
+    check_udp_port "$HYSTERIA_PORT"
+  fi
 }
 
 main "$@"

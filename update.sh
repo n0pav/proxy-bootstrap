@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/proxy-bootstrap.log"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -22,14 +23,33 @@ check_root() {
   fi
 }
 
+bool_is_true() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+load_env() {
+  if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+  fi
+
+  ENABLE_HYSTERIA="${ENABLE_HYSTERIA:-true}"
+}
+
 main() {
   check_root
   init_logging
+  load_env
 
   log "Starting proxy update."
   PROXY_BOOTSTRAP_SKIP_LOG_INIT=true bash "$SCRIPT_DIR/install.sh"
 
-  if command -v certbot >/dev/null 2>&1; then
+  if bool_is_true "$ENABLE_HYSTERIA" && command -v certbot >/dev/null 2>&1; then
     log "Running certbot renew."
     certbot renew --quiet
   fi

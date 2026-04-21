@@ -56,6 +56,32 @@ bool_is_true() {
   esac
 }
 
+validate_bool_setting() {
+  local name="$1"
+  local value="$2"
+
+  case "${value,,}" in
+    1|0|true|false|yes|no|on|off) ;;
+    *) fatal "$name must be a boolean-like value: true/false, yes/no, on/off, 1/0." ;;
+  esac
+}
+
+normalize_bool() {
+  if bool_is_true "$1"; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+vless_enabled() {
+  bool_is_true "$ENABLE_VLESS"
+}
+
+hysteria_enabled() {
+  bool_is_true "$ENABLE_HYSTERIA"
+}
+
 validate_port() {
   local name="$1"
   local value="$2"
@@ -118,6 +144,8 @@ load_env() {
     . "$STATE_FILE"
   fi
 
+  ENABLE_VLESS="${ENABLE_VLESS:-true}"
+  ENABLE_HYSTERIA="${ENABLE_HYSTERIA:-true}"
   VLESS_PORT="${VLESS_PORT:-443}"
   HYSTERIA_PORT="${HYSTERIA_PORT:-8443}"
   HYSTERIA_USER="${HYSTERIA_USER:-user1}"
@@ -146,26 +174,42 @@ load_env() {
 validate_env() {
   log "Validating input variables."
 
-  [ -n "${HYSTERIA_DOMAIN:-}" ] || fatal "HYSTERIA_DOMAIN is required."
-  [ -n "${LETSENCRYPT_EMAIL:-}" ] || fatal "LETSENCRYPT_EMAIL is required."
-  [ -n "${REALITY_SERVER_NAME:-}" ] || fatal "REALITY_SERVER_NAME is required."
+  validate_bool_setting "ENABLE_VLESS" "$ENABLE_VLESS"
+  validate_bool_setting "ENABLE_HYSTERIA" "$ENABLE_HYSTERIA"
 
-  [[ "$HYSTERIA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || fatal "HYSTERIA_DOMAIN must look like a DNS name."
-  [[ "$LETSENCRYPT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fatal "LETSENCRYPT_EMAIL must be a valid email address."
+  ENABLE_VLESS="$(normalize_bool "$ENABLE_VLESS")"
+  ENABLE_HYSTERIA="$(normalize_bool "$ENABLE_HYSTERIA")"
 
-  validate_port "VLESS_PORT" "$VLESS_PORT"
-  validate_port "HYSTERIA_PORT" "$HYSTERIA_PORT"
-  validate_port "REALITY_HANDSHAKE_PORT" "$REALITY_HANDSHAKE_PORT"
+  if ! vless_enabled && ! hysteria_enabled; then
+    fatal "At least one protocol must be enabled. Set ENABLE_VLESS=true and/or ENABLE_HYSTERIA=true."
+  fi
 
-  [ "$VLESS_PORT" != "$HYSTERIA_PORT" ] || fatal "VLESS_PORT and HYSTERIA_PORT must differ."
-  [[ "$HYSTERIA_UP_MBPS" =~ ^[0-9]+$ ]] || fatal "HYSTERIA_UP_MBPS must be an integer."
-  [[ "$HYSTERIA_DOWN_MBPS" =~ ^[0-9]+$ ]] || fatal "HYSTERIA_DOWN_MBPS must be an integer."
+  if vless_enabled; then
+    [ -n "${REALITY_SERVER_NAME:-}" ] || fatal "REALITY_SERVER_NAME is required when ENABLE_VLESS=true."
+    validate_port "VLESS_PORT" "$VLESS_PORT"
+    validate_port "REALITY_HANDSHAKE_PORT" "$REALITY_HANDSHAKE_PORT"
+    validate_optional_uuid "VLESS_UUID" "${VLESS_UUID:-}"
+    validate_optional_hex "REALITY_SHORT_ID" "${REALITY_SHORT_ID:-}"
+  fi
 
-  validate_optional_uuid "VLESS_UUID" "${VLESS_UUID:-}"
-  validate_optional_hex "REALITY_SHORT_ID" "${REALITY_SHORT_ID:-}"
+  if hysteria_enabled; then
+    [ -n "${HYSTERIA_DOMAIN:-}" ] || fatal "HYSTERIA_DOMAIN is required when ENABLE_HYSTERIA=true."
+    [ -n "${LETSENCRYPT_EMAIL:-}" ] || fatal "LETSENCRYPT_EMAIL is required when ENABLE_HYSTERIA=true."
+    [ -n "${HYSTERIA_USER:-}" ] || fatal "HYSTERIA_USER is required when ENABLE_HYSTERIA=true."
 
-  if [ -n "${HYSTERIA_PASSWORD:-}" ] && [ "${#HYSTERIA_PASSWORD}" -lt 8 ]; then
-    fatal "HYSTERIA_PASSWORD must be at least 8 characters long."
+    [[ "$HYSTERIA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || fatal "HYSTERIA_DOMAIN must look like a DNS name."
+    [[ "$LETSENCRYPT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fatal "LETSENCRYPT_EMAIL must be a valid email address."
+    validate_port "HYSTERIA_PORT" "$HYSTERIA_PORT"
+    [[ "$HYSTERIA_UP_MBPS" =~ ^[0-9]+$ ]] || fatal "HYSTERIA_UP_MBPS must be an integer."
+    [[ "$HYSTERIA_DOWN_MBPS" =~ ^[0-9]+$ ]] || fatal "HYSTERIA_DOWN_MBPS must be an integer."
+
+    if [ -n "${HYSTERIA_PASSWORD:-}" ] && [ "${#HYSTERIA_PASSWORD}" -lt 8 ]; then
+      fatal "HYSTERIA_PASSWORD must be at least 8 characters long."
+    fi
+  fi
+
+  if vless_enabled && hysteria_enabled; then
+    [ "$VLESS_PORT" != "$HYSTERIA_PORT" ] || fatal "VLESS_PORT and HYSTERIA_PORT must differ."
   fi
 
   case "$FIREWALL_BACKEND" in
@@ -183,10 +227,12 @@ validate_env() {
   fi
   [ -n "$SERVER_IPV4" ] || fatal "Failed to auto-detect SERVER_IPV4. Set it in .env."
 
-  local dns_ips
-  dns_ips="$(getent ahostsv4 "$HYSTERIA_DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u || true)"
-  [ -n "$dns_ips" ] || fatal "HYSTERIA_DOMAIN does not resolve yet. Create the A record before running install."
-  printf '%s\n' "$dns_ips" | grep -Fxq "$SERVER_IPV4" || fatal "HYSTERIA_DOMAIN resolves to [$dns_ips], but this server IPv4 is $SERVER_IPV4."
+  if hysteria_enabled; then
+    local dns_ips
+    dns_ips="$(getent ahostsv4 "$HYSTERIA_DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+    [ -n "$dns_ips" ] || fatal "HYSTERIA_DOMAIN does not resolve yet. Create the A record before running install."
+    printf '%s\n' "$dns_ips" | grep -Fxq "$SERVER_IPV4" || fatal "HYSTERIA_DOMAIN resolves to [$dns_ips], but this server IPv4 is $SERVER_IPV4."
+  fi
 }
 
 install_dependencies() {
@@ -382,12 +428,26 @@ configure_firewall() {
   case "$backend" in
     ufw)
       remove_nat_service_if_present
-      reconcile_managed_ufw_rule "$MANAGED_UFW_RULE_HTTP" "80/tcp"
-      reconcile_managed_ufw_rule "$MANAGED_UFW_RULE_VLESS" "${VLESS_PORT}/tcp"
-      reconcile_managed_ufw_rule "$MANAGED_UFW_RULE_HYSTERIA" "${HYSTERIA_PORT}/udp"
-      ensure_ufw_rule "80/tcp" "proxy-bootstrap-certbot" MANAGED_UFW_RULE_HTTP
-      ensure_ufw_rule "${VLESS_PORT}/tcp" "proxy-bootstrap-vless" MANAGED_UFW_RULE_VLESS
-      ensure_ufw_rule "${HYSTERIA_PORT}/udp" "proxy-bootstrap-hysteria2" MANAGED_UFW_RULE_HYSTERIA
+      if hysteria_enabled; then
+        reconcile_managed_ufw_rule "$MANAGED_UFW_RULE_HTTP" "80/tcp"
+        reconcile_managed_ufw_rule "$MANAGED_UFW_RULE_HYSTERIA" "${HYSTERIA_PORT}/udp"
+        ensure_ufw_rule "80/tcp" "proxy-bootstrap-certbot" MANAGED_UFW_RULE_HTTP
+        ensure_ufw_rule "${HYSTERIA_PORT}/udp" "proxy-bootstrap-hysteria2" MANAGED_UFW_RULE_HYSTERIA
+      else
+        remove_ufw_rule_if_managed "$MANAGED_UFW_RULE_HTTP"
+        remove_ufw_rule_if_managed "$MANAGED_UFW_RULE_HYSTERIA"
+        MANAGED_UFW_RULE_HTTP=""
+        MANAGED_UFW_RULE_HYSTERIA=""
+      fi
+
+      if vless_enabled; then
+        reconcile_managed_ufw_rule "$MANAGED_UFW_RULE_VLESS" "${VLESS_PORT}/tcp"
+        ensure_ufw_rule "${VLESS_PORT}/tcp" "proxy-bootstrap-vless" MANAGED_UFW_RULE_VLESS
+      else
+        remove_ufw_rule_if_managed "$MANAGED_UFW_RULE_VLESS"
+        MANAGED_UFW_RULE_VLESS=""
+      fi
+
       if bool_is_true "$MANAGE_NAT"; then
         write_ufw_nat_file
       else
@@ -486,30 +546,28 @@ generate_reality_keypair() {
 generate_keys() {
   log "Ensuring proxy secrets exist."
 
-  if [ -n "${VLESS_UUID:-}" ] && [ -n "${REALITY_PRIVATE_KEY:-}" ] && [ -n "${REALITY_PUBLIC_KEY:-}" ] && [ -n "${REALITY_SHORT_ID:-}" ] && [ -n "${HYSTERIA_PASSWORD:-}" ]; then
-    log "Existing secrets found; generation skipped."
-    save_state
-    return 0
+  if vless_enabled; then
+    if [ -z "${VLESS_UUID:-}" ]; then
+      VLESS_UUID="$(sing-box generate uuid)"
+      log "Generated VLESS UUID."
+    fi
+
+    if [ -z "${REALITY_PRIVATE_KEY:-}" ] || [ -z "${REALITY_PUBLIC_KEY:-}" ]; then
+      generate_reality_keypair
+      log "Generated Reality keypair."
+    fi
+
+    if [ -z "${REALITY_SHORT_ID:-}" ]; then
+      REALITY_SHORT_ID="$(sing-box generate rand --hex 8)"
+      log "Generated Reality short ID."
+    fi
   fi
 
-  if [ -z "${VLESS_UUID:-}" ]; then
-    VLESS_UUID="$(sing-box generate uuid)"
-    log "Generated VLESS UUID."
-  fi
-
-  if [ -z "${REALITY_PRIVATE_KEY:-}" ] || [ -z "${REALITY_PUBLIC_KEY:-}" ]; then
-    generate_reality_keypair
-    log "Generated Reality keypair."
-  fi
-
-  if [ -z "${REALITY_SHORT_ID:-}" ]; then
-    REALITY_SHORT_ID="$(sing-box generate rand --hex 8)"
-    log "Generated Reality short ID."
-  fi
-
-  if [ -z "${HYSTERIA_PASSWORD:-}" ]; then
-    HYSTERIA_PASSWORD="$(sing-box generate rand --hex 16)"
-    log "Generated Hysteria2 password."
+  if hysteria_enabled; then
+    if [ -z "${HYSTERIA_PASSWORD:-}" ]; then
+      HYSTERIA_PASSWORD="$(sing-box generate rand --hex 16)"
+      log "Generated Hysteria2 password."
+    fi
   fi
 
   save_state
@@ -558,16 +616,18 @@ obtain_certificate() {
 write_client_info() {
   log "Writing client connection details to $CLIENT_INFO_FILE."
 
-  cat > "$CLIENT_INFO_FILE" <<EOF
-VLESS Reality:
-vless://$VLESS_UUID@$SERVER_IPV4:$VLESS_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$REALITY_SERVER_NAME&fp=chrome&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID&type=tcp&headerType=none#VLESS-Reality
-
-Hysteria2:
-hysteria2://$HYSTERIA_PASSWORD@$HYSTERIA_DOMAIN:$HYSTERIA_PORT?insecure=0&sni=$HYSTERIA_DOMAIN#Hysteria2
-
-Server IPv4: $SERVER_IPV4
-Hysteria domain: $HYSTERIA_DOMAIN
-EOF
+  ENABLE_VLESS="$ENABLE_VLESS" \
+  ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
+  SERVER_IPV4="$SERVER_IPV4" \
+  VLESS_PORT="$VLESS_PORT" \
+  VLESS_UUID="${VLESS_UUID:-}" \
+  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}" \
+  REALITY_PUBLIC_KEY="${REALITY_PUBLIC_KEY:-}" \
+  REALITY_SHORT_ID="${REALITY_SHORT_ID:-}" \
+  HYSTERIA_PORT="$HYSTERIA_PORT" \
+  HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-}" \
+  HYSTERIA_DOMAIN="${HYSTERIA_DOMAIN:-}" \
+  "$SCRIPT_DIR/scripts/build-client-links.sh" > "$CLIENT_INFO_FILE"
 
   chmod 600 "$CLIENT_INFO_FILE"
 }
@@ -576,35 +636,45 @@ write_configs() {
   log "Writing sing-box configuration."
 
   install -d -m 700 "$CONFIG_DIR"
-  obtain_certificate
+  CERT_FULLCHAIN="${CERT_FULLCHAIN:-}"
+  CERT_PRIVKEY="${CERT_PRIVKEY:-}"
 
-  render_template \
-    "$SCRIPT_DIR/templates/config.json.tpl" \
-    "$CONFIG_FILE" \
-    600 \
-    VLESS_PORT "$VLESS_PORT" \
-    VLESS_UUID "$VLESS_UUID" \
-    REALITY_SERVER_NAME "$REALITY_SERVER_NAME" \
-    REALITY_HANDSHAKE_PORT "$REALITY_HANDSHAKE_PORT" \
-    REALITY_PRIVATE_KEY "$REALITY_PRIVATE_KEY" \
-    REALITY_SHORT_ID "$REALITY_SHORT_ID" \
-    HYSTERIA_PORT "$HYSTERIA_PORT" \
-    HYSTERIA_UP_MBPS "$HYSTERIA_UP_MBPS" \
-    HYSTERIA_DOWN_MBPS "$HYSTERIA_DOWN_MBPS" \
-    HYSTERIA_USER "$HYSTERIA_USER" \
-    HYSTERIA_PASSWORD "$HYSTERIA_PASSWORD" \
-    HYSTERIA_DOMAIN "$HYSTERIA_DOMAIN" \
-    CERT_FULLCHAIN "$CERT_FULLCHAIN" \
-    CERT_PRIVKEY "$CERT_PRIVKEY"
+  if hysteria_enabled; then
+    obtain_certificate
+  else
+    rm -f "$CERTBOT_HOOK"
+  fi
+
+  ENABLE_VLESS="$ENABLE_VLESS" \
+  ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
+  VLESS_PORT="$VLESS_PORT" \
+  VLESS_UUID="${VLESS_UUID:-}" \
+  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}" \
+  REALITY_HANDSHAKE_PORT="$REALITY_HANDSHAKE_PORT" \
+  REALITY_PRIVATE_KEY="${REALITY_PRIVATE_KEY:-}" \
+  REALITY_SHORT_ID="${REALITY_SHORT_ID:-}" \
+  HYSTERIA_PORT="$HYSTERIA_PORT" \
+  HYSTERIA_UP_MBPS="$HYSTERIA_UP_MBPS" \
+  HYSTERIA_DOWN_MBPS="$HYSTERIA_DOWN_MBPS" \
+  HYSTERIA_USER="${HYSTERIA_USER:-}" \
+  HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-}" \
+  HYSTERIA_DOMAIN="${HYSTERIA_DOMAIN:-}" \
+  CERT_FULLCHAIN="$CERT_FULLCHAIN" \
+  CERT_PRIVKEY="$CERT_PRIVKEY" \
+  "$SCRIPT_DIR/scripts/build-singbox-config.sh" > "$CONFIG_FILE"
+
+  chmod 600 "$CONFIG_FILE"
 
   sing-box check -c "$CONFIG_FILE"
   sing-box format -w -c "$CONFIG_FILE" >/dev/null 2>&1 || true
 
-  install -d -m 755 "$(dirname "$CERTBOT_HOOK")"
-  render_template \
-    "$SCRIPT_DIR/templates/restart-sing-box-hook.sh.tpl" \
-    "$CERTBOT_HOOK" \
-    755
+  if hysteria_enabled; then
+    install -d -m 755 "$(dirname "$CERTBOT_HOOK")"
+    render_template \
+      "$SCRIPT_DIR/templates/restart-sing-box-hook.sh.tpl" \
+      "$CERTBOT_HOOK" \
+      755
+  fi
 
   write_client_info
 }
@@ -643,12 +713,20 @@ wait_for_service_readiness() {
 
   log "Waiting for sing-box ports to start listening."
 
+  if ! vless_enabled; then
+    tcp_ready=true
+  fi
+
+  if ! hysteria_enabled; then
+    udp_ready=true
+  fi
+
   for ((i = 1; i <= attempts; i++)); do
-    if ss -H -ltn "( sport = :$VLESS_PORT )" 2>/dev/null | grep -q ":$VLESS_PORT"; then
+    if ! "$tcp_ready" && ss -H -ltn "( sport = :$VLESS_PORT )" 2>/dev/null | grep -q ":$VLESS_PORT"; then
       tcp_ready=true
     fi
 
-    if ss -H -lun "( sport = :$HYSTERIA_PORT )" 2>/dev/null | grep -q ":$HYSTERIA_PORT"; then
+    if ! "$udp_ready" && ss -H -lun "( sport = :$HYSTERIA_PORT )" 2>/dev/null | grep -q ":$HYSTERIA_PORT"; then
       udp_ready=true
     fi
 
@@ -666,7 +744,11 @@ wait_for_service_readiness() {
 run_healthcheck() {
   wait_for_service_readiness
   log "Running health check."
-  VLESS_PORT="$VLESS_PORT" HYSTERIA_PORT="$HYSTERIA_PORT" "$SCRIPT_DIR/scripts/healthcheck.sh"
+  ENABLE_VLESS="$ENABLE_VLESS" \
+  ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
+  VLESS_PORT="$VLESS_PORT" \
+  HYSTERIA_PORT="$HYSTERIA_PORT" \
+  "$SCRIPT_DIR/scripts/healthcheck.sh"
 }
 
 main() {
