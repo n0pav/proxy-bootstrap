@@ -2,7 +2,7 @@
 
 [**English 🇺🇸**](README.md) / [**Русский 🇷🇺**](README.ru.md)
 
-Production-ready bootstrap for a clean Ubuntu `22.04` or `24.04` VPS that installs:
+Production-ready bootstrap for a clean Ubuntu `22.04`, `24.04` or `26.04` VPS that installs:
 
 - `VLESS + Reality` on `443/tcp`
 - `Hysteria2` on `8443/udp`
