@@ -106,6 +106,60 @@ validate_optional_uuid() {
   [[ "$value" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] || fatal "$name must be a valid UUID."
 }
 
+validate_reality_fingerprint() {
+  local value="$1"
+
+  case "$value" in
+    chrome|firefox|edge|safari|360|qq|ios|android|random|randomized) ;;
+    *) fatal "REALITY_FINGERPRINT must be one of: chrome, firefox, edge, safari, 360, qq, ios, android, random, randomized." ;;
+  esac
+}
+
+validate_hysteria_obfs_type() {
+  local value="$1"
+
+  case "$value" in
+    ""|salamander|gecko) ;;
+    *) fatal "HYSTERIA_OBFS_TYPE must be empty, salamander, or gecko." ;;
+  esac
+}
+
+validate_server_name() {
+  local name="$1"
+  local value="$2"
+
+  [[ "$value" =~ ^[A-Za-z0-9.-]+$ ]] || fatal "$name must be a DNS name without a scheme, path, or port."
+  [ "${#value}" -le 253 ] || fatal "$name must not exceed 253 characters."
+
+  case "$value" in
+    .*|*.|*..*) fatal "$name is not a valid DNS name: $value" ;;
+  esac
+}
+
+validate_http_url() {
+  local name="$1"
+  local value="$2"
+  local authority host
+
+  [[ "$value" != *[[:space:]]* ]] || fatal "$name must not contain whitespace."
+
+  case "$value" in
+    http://*|https://*) ;;
+    *) fatal "$name must be an absolute http:// or https:// URL." ;;
+  esac
+
+  authority="${value#*://}"
+  authority="${authority%%[/?#]*}"
+  authority="${authority##*@}"
+
+  case "$authority" in
+    \[*\]|\[*\]:*) host="${authority#\[}"; host="${host%%\]*}" ;;
+    *) host="${authority%%:*}" ;;
+  esac
+
+  [ -n "$host" ] || fatal "$name must include a host."
+}
+
 check_root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     echo "This script must be run as root. Use: sudo bash install.sh" >&2
@@ -147,12 +201,15 @@ load_env() {
   ENABLE_VLESS="${ENABLE_VLESS:-true}"
   ENABLE_HYSTERIA="${ENABLE_HYSTERIA:-true}"
   VLESS_PORT="${VLESS_PORT:-443}"
-  HYSTERIA_PORT="${HYSTERIA_PORT:-8443}"
+  HYSTERIA_PORT="${HYSTERIA_PORT:-443}"
   HYSTERIA_USER="${HYSTERIA_USER:-user1}"
   HYSTERIA_UP_MBPS="${HYSTERIA_UP_MBPS:-100}"
   HYSTERIA_DOWN_MBPS="${HYSTERIA_DOWN_MBPS:-100}"
-  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-github.com}"
+  HYSTERIA_MASQUERADE_URL="${HYSTERIA_MASQUERADE_URL:-}"
+  HYSTERIA_OBFS_TYPE="${HYSTERIA_OBFS_TYPE:-}"
+  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}"
   REALITY_HANDSHAKE_PORT="${REALITY_HANDSHAKE_PORT:-443}"
+  REALITY_FINGERPRINT="${REALITY_FINGERPRINT:-chrome}"
   FIREWALL_BACKEND="${FIREWALL_BACKEND:-auto}"
   MANAGE_NAT="${MANAGE_NAT:-true}"
   CERTBOT_STAGING="${CERTBOT_STAGING:-false}"
@@ -165,6 +222,7 @@ load_env() {
   REALITY_PUBLIC_KEY="${REALITY_PUBLIC_KEY:-${STATE_REALITY_PUBLIC_KEY:-}}"
   REALITY_SHORT_ID="${REALITY_SHORT_ID:-${STATE_REALITY_SHORT_ID:-}}"
   HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-${STATE_HYSTERIA_PASSWORD:-}}"
+  HYSTERIA_OBFS_PASSWORD="${HYSTERIA_OBFS_PASSWORD:-${STATE_HYSTERIA_OBFS_PASSWORD:-}}"
 
   MANAGED_UFW_RULE_HTTP="${STATE_UFW_RULE_HTTP:-$MANAGED_UFW_RULE_HTTP}"
   MANAGED_UFW_RULE_VLESS="${STATE_UFW_RULE_VLESS:-$MANAGED_UFW_RULE_VLESS}"
@@ -186,8 +244,10 @@ validate_env() {
 
   if vless_enabled; then
     [ -n "${REALITY_SERVER_NAME:-}" ] || fatal "REALITY_SERVER_NAME is required when ENABLE_VLESS=true."
+    validate_server_name "REALITY_SERVER_NAME" "$REALITY_SERVER_NAME"
     validate_port "VLESS_PORT" "$VLESS_PORT"
     validate_port "REALITY_HANDSHAKE_PORT" "$REALITY_HANDSHAKE_PORT"
+    validate_reality_fingerprint "$REALITY_FINGERPRINT"
     validate_optional_uuid "VLESS_UUID" "${VLESS_UUID:-}"
     validate_optional_hex "REALITY_SHORT_ID" "${REALITY_SHORT_ID:-}"
   fi
@@ -196,20 +256,23 @@ validate_env() {
     [ -n "${HYSTERIA_DOMAIN:-}" ] || fatal "HYSTERIA_DOMAIN is required when ENABLE_HYSTERIA=true."
     [ -n "${LETSENCRYPT_EMAIL:-}" ] || fatal "LETSENCRYPT_EMAIL is required when ENABLE_HYSTERIA=true."
     [ -n "${HYSTERIA_USER:-}" ] || fatal "HYSTERIA_USER is required when ENABLE_HYSTERIA=true."
+    [ -n "${HYSTERIA_MASQUERADE_URL:-}" ] || fatal "HYSTERIA_MASQUERADE_URL is required when ENABLE_HYSTERIA=true."
 
-    [[ "$HYSTERIA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || fatal "HYSTERIA_DOMAIN must look like a DNS name."
+    validate_server_name "HYSTERIA_DOMAIN" "$HYSTERIA_DOMAIN"
     [[ "$LETSENCRYPT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fatal "LETSENCRYPT_EMAIL must be a valid email address."
+    validate_http_url "HYSTERIA_MASQUERADE_URL" "$HYSTERIA_MASQUERADE_URL"
     validate_port "HYSTERIA_PORT" "$HYSTERIA_PORT"
+    validate_hysteria_obfs_type "$HYSTERIA_OBFS_TYPE"
     [[ "$HYSTERIA_UP_MBPS" =~ ^[0-9]+$ ]] || fatal "HYSTERIA_UP_MBPS must be an integer."
     [[ "$HYSTERIA_DOWN_MBPS" =~ ^[0-9]+$ ]] || fatal "HYSTERIA_DOWN_MBPS must be an integer."
 
     if [ -n "${HYSTERIA_PASSWORD:-}" ] && [ "${#HYSTERIA_PASSWORD}" -lt 8 ]; then
       fatal "HYSTERIA_PASSWORD must be at least 8 characters long."
     fi
-  fi
 
-  if vless_enabled && hysteria_enabled; then
-    [ "$VLESS_PORT" != "$HYSTERIA_PORT" ] || fatal "VLESS_PORT and HYSTERIA_PORT must differ."
+    if [ -n "$HYSTERIA_OBFS_TYPE" ] && [ -n "${HYSTERIA_OBFS_PASSWORD:-}" ] && [ "${#HYSTERIA_OBFS_PASSWORD}" -lt 8 ]; then
+      fatal "HYSTERIA_OBFS_PASSWORD must be at least 8 characters long when HYSTERIA_OBFS_TYPE is enabled."
+    fi
   fi
 
   case "$FIREWALL_BACKEND" in
@@ -515,6 +578,56 @@ EOF
   apt-get install -y "$SING_BOX_PACKAGE"
 }
 
+get_sing_box_version() {
+  sing-box version 2>/dev/null | awk '
+    match($0, /[0-9]+\.[0-9]+\.[0-9]+([-.][^ ]+)?/) {
+      print substr($0, RSTART, RLENGTH)
+      exit
+    }
+  '
+}
+
+sing_box_version_supports_gecko() {
+  local version="$1"
+  local core="${version%%-*}"
+  local suffix="${version#"$core"}"
+  local major minor patch alpha_number
+
+  IFS=. read -r major minor patch <<< "$core"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] || return 1
+
+  (( major > 1 )) && return 0
+  (( major < 1 )) && return 1
+  (( minor > 14 )) && return 0
+  (( minor < 14 )) && return 1
+  (( patch > 0 )) && return 0
+
+  case "$suffix" in
+    ""|-beta.*|-rc.*) return 0 ;;
+    -alpha.*)
+      alpha_number="${suffix#-alpha.}"
+      [[ "$alpha_number" =~ ^[0-9]+$ ]] && (( alpha_number >= 26 ))
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_sing_box_feature_support() {
+  hysteria_enabled || return 0
+
+  local version
+  version="$(get_sing_box_version)"
+  [ -n "$version" ] || fatal "Failed to determine the installed sing-box version."
+
+  if ! dpkg --compare-versions "$version" ge "1.11.0"; then
+    fatal "Hysteria2 masquerade requires sing-box 1.11.0 or newer; installed version is $version."
+  fi
+
+  if [ "$HYSTERIA_OBFS_TYPE" = "gecko" ] && ! sing_box_version_supports_gecko "$version"; then
+    fatal "Hysteria2 gecko obfs requires sing-box 1.14.0-alpha.26 or newer; installed version is $version. Use salamander, or set SING_BOX_PACKAGE=sing-box-beta until 1.14 becomes stable."
+  fi
+}
+
 save_state() {
   log "Saving bootstrap state to $STATE_FILE."
 
@@ -525,6 +638,7 @@ save_state() {
     printf 'STATE_REALITY_PUBLIC_KEY=%q\n' "$REALITY_PUBLIC_KEY"
     printf 'STATE_REALITY_SHORT_ID=%q\n' "$REALITY_SHORT_ID"
     printf 'STATE_HYSTERIA_PASSWORD=%q\n' "$HYSTERIA_PASSWORD"
+    printf 'STATE_HYSTERIA_OBFS_PASSWORD=%q\n' "$HYSTERIA_OBFS_PASSWORD"
     printf 'STATE_UFW_RULE_HTTP=%q\n' "$MANAGED_UFW_RULE_HTTP"
     printf 'STATE_UFW_RULE_VLESS=%q\n' "$MANAGED_UFW_RULE_VLESS"
     printf 'STATE_UFW_RULE_HYSTERIA=%q\n' "$MANAGED_UFW_RULE_HYSTERIA"
@@ -567,6 +681,11 @@ generate_keys() {
     if [ -z "${HYSTERIA_PASSWORD:-}" ]; then
       HYSTERIA_PASSWORD="$(sing-box generate rand --hex 16)"
       log "Generated Hysteria2 password."
+    fi
+
+    if [ -n "$HYSTERIA_OBFS_TYPE" ] && [ -z "${HYSTERIA_OBFS_PASSWORD:-}" ]; then
+      HYSTERIA_OBFS_PASSWORD="$(sing-box generate rand --hex 16)"
+      log "Generated Hysteria2 obfs password."
     fi
   fi
 
@@ -613,27 +732,34 @@ obtain_certificate() {
   [ -f "$CERT_PRIVKEY" ] || fatal "Certificate key file was not created: $CERT_PRIVKEY"
 }
 
-write_client_info() {
-  log "Writing client connection details to $CLIENT_INFO_FILE."
+build_client_info() {
+  local output_file="$1"
 
-  ENABLE_VLESS="$ENABLE_VLESS" \
-  ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
-  SERVER_IPV4="$SERVER_IPV4" \
-  VLESS_PORT="$VLESS_PORT" \
-  VLESS_UUID="${VLESS_UUID:-}" \
-  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}" \
-  REALITY_PUBLIC_KEY="${REALITY_PUBLIC_KEY:-}" \
-  REALITY_SHORT_ID="${REALITY_SHORT_ID:-}" \
-  HYSTERIA_PORT="$HYSTERIA_PORT" \
-  HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-}" \
-  HYSTERIA_DOMAIN="${HYSTERIA_DOMAIN:-}" \
-  "$SCRIPT_DIR/scripts/build-client-links.sh" > "$CLIENT_INFO_FILE"
+  if ! ENABLE_VLESS="$ENABLE_VLESS" \
+    ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
+    SERVER_IPV4="$SERVER_IPV4" \
+    VLESS_PORT="$VLESS_PORT" \
+    VLESS_UUID="${VLESS_UUID:-}" \
+    REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}" \
+    REALITY_FINGERPRINT="$REALITY_FINGERPRINT" \
+    REALITY_PUBLIC_KEY="${REALITY_PUBLIC_KEY:-}" \
+    REALITY_SHORT_ID="${REALITY_SHORT_ID:-}" \
+    HYSTERIA_PORT="$HYSTERIA_PORT" \
+    HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-}" \
+    HYSTERIA_DOMAIN="${HYSTERIA_DOMAIN:-}" \
+    HYSTERIA_OBFS_TYPE="$HYSTERIA_OBFS_TYPE" \
+    HYSTERIA_OBFS_PASSWORD="${HYSTERIA_OBFS_PASSWORD:-}" \
+    "$SCRIPT_DIR/scripts/build-client-links.sh" > "$output_file"; then
+    return 1
+  fi
 
-  chmod 600 "$CLIENT_INFO_FILE"
+  chmod 600 "$output_file"
 }
 
 write_configs() {
   log "Writing sing-box configuration."
+
+  local temp_client_info temp_config
 
   install -d -m 700 "$CONFIG_DIR"
   CERT_FULLCHAIN="${CERT_FULLCHAIN:-}"
@@ -645,28 +771,50 @@ write_configs() {
     rm -f "$CERTBOT_HOOK"
   fi
 
-  ENABLE_VLESS="$ENABLE_VLESS" \
-  ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
-  VLESS_PORT="$VLESS_PORT" \
-  VLESS_UUID="${VLESS_UUID:-}" \
-  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}" \
-  REALITY_HANDSHAKE_PORT="$REALITY_HANDSHAKE_PORT" \
-  REALITY_PRIVATE_KEY="${REALITY_PRIVATE_KEY:-}" \
-  REALITY_SHORT_ID="${REALITY_SHORT_ID:-}" \
-  HYSTERIA_PORT="$HYSTERIA_PORT" \
-  HYSTERIA_UP_MBPS="$HYSTERIA_UP_MBPS" \
-  HYSTERIA_DOWN_MBPS="$HYSTERIA_DOWN_MBPS" \
-  HYSTERIA_USER="${HYSTERIA_USER:-}" \
-  HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-}" \
-  HYSTERIA_DOMAIN="${HYSTERIA_DOMAIN:-}" \
-  CERT_FULLCHAIN="$CERT_FULLCHAIN" \
-  CERT_PRIVKEY="$CERT_PRIVKEY" \
-  "$SCRIPT_DIR/scripts/build-singbox-config.sh" > "$CONFIG_FILE"
+  temp_config="$(mktemp "$CONFIG_DIR/config.json.XXXXXX")"
+  if ! temp_client_info="$(mktemp "$CONFIG_DIR/client-links.txt.XXXXXX")"; then
+    rm -f "$temp_config"
+    fatal "Failed to create temporary client information file."
+  fi
 
-  chmod 600 "$CONFIG_FILE"
+  if ! ENABLE_VLESS="$ENABLE_VLESS" \
+    ENABLE_HYSTERIA="$ENABLE_HYSTERIA" \
+    VLESS_PORT="$VLESS_PORT" \
+    VLESS_UUID="${VLESS_UUID:-}" \
+    REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}" \
+    REALITY_HANDSHAKE_PORT="$REALITY_HANDSHAKE_PORT" \
+    REALITY_PRIVATE_KEY="${REALITY_PRIVATE_KEY:-}" \
+    REALITY_SHORT_ID="${REALITY_SHORT_ID:-}" \
+    HYSTERIA_PORT="$HYSTERIA_PORT" \
+    HYSTERIA_UP_MBPS="$HYSTERIA_UP_MBPS" \
+    HYSTERIA_DOWN_MBPS="$HYSTERIA_DOWN_MBPS" \
+    HYSTERIA_USER="${HYSTERIA_USER:-}" \
+    HYSTERIA_PASSWORD="${HYSTERIA_PASSWORD:-}" \
+    HYSTERIA_DOMAIN="${HYSTERIA_DOMAIN:-}" \
+    HYSTERIA_MASQUERADE_URL="$HYSTERIA_MASQUERADE_URL" \
+    HYSTERIA_OBFS_TYPE="$HYSTERIA_OBFS_TYPE" \
+    HYSTERIA_OBFS_PASSWORD="${HYSTERIA_OBFS_PASSWORD:-}" \
+    CERT_FULLCHAIN="$CERT_FULLCHAIN" \
+    CERT_PRIVKEY="$CERT_PRIVKEY" \
+    "$SCRIPT_DIR/scripts/build-singbox-config.sh" > "$temp_config"; then
+    rm -f "$temp_config" "$temp_client_info"
+    fatal "Failed to build sing-box configuration."
+  fi
 
-  sing-box check -c "$CONFIG_FILE"
-  sing-box format -w -c "$CONFIG_FILE" >/dev/null 2>&1 || true
+  if ! sing-box check -c "$temp_config"; then
+    rm -f "$temp_config" "$temp_client_info"
+    fatal "Generated sing-box configuration is not supported by the installed sing-box version."
+  fi
+
+  log "Writing client connection details to $CLIENT_INFO_FILE."
+  if ! build_client_info "$temp_client_info"; then
+    rm -f "$temp_config" "$temp_client_info"
+    fatal "Failed to build client connection details."
+  fi
+
+  chmod 600 "$temp_config"
+  mv -f "$temp_config" "$CONFIG_FILE"
+  mv -f "$temp_client_info" "$CLIENT_INFO_FILE"
 
   if hysteria_enabled; then
     install -d -m 755 "$(dirname "$CERTBOT_HOOK")"
@@ -675,8 +823,6 @@ write_configs() {
       "$CERTBOT_HOOK" \
       755
   fi
-
-  write_client_info
 }
 
 ensure_sing_box_service() {
@@ -760,9 +906,10 @@ main() {
   load_env
   validate_env
   install_dependencies
+  install_vpn
+  ensure_sing_box_feature_support
   configure_sysctl
   configure_firewall
-  install_vpn
   generate_keys
   write_configs
   enable_services

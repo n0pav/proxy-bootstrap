@@ -2,8 +2,8 @@
 set -euo pipefail
 
 bool_is_true() {
-  case "${1,,}" in
-    1|true|yes|on) return 0 ;;
+  case "$1" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -38,6 +38,34 @@ validate_non_negative_int() {
   }
 }
 
+validate_http_url() {
+  local name="$1"
+  local value="$2"
+  local authority host
+
+  case "$value" in
+    http://*|https://*) ;;
+    *)
+      printf '%s must be an absolute http:// or https:// URL.\n' "$name" >&2
+      exit 1
+      ;;
+  esac
+
+  authority="${value#*://}"
+  authority="${authority%%[/?#]*}"
+  authority="${authority##*@}"
+
+  case "$authority" in
+    \[*\]|\[*\]:*) host="${authority#\[}"; host="${host%%\]*}" ;;
+    *) host="${authority%%:*}" ;;
+  esac
+
+  if [ -z "$host" ] || [[ "$value" == *[[:space:]]* ]]; then
+    printf '%s must include a host and contain no whitespace.\n' "$name" >&2
+    exit 1
+  fi
+}
+
 ENABLE_VLESS="${ENABLE_VLESS:-true}"
 ENABLE_HYSTERIA="${ENABLE_HYSTERIA:-true}"
 
@@ -68,6 +96,8 @@ if bool_is_true "$ENABLE_HYSTERIA"; then
   require_var "HYSTERIA_DOMAIN" "${HYSTERIA_DOMAIN:-}"
   require_var "HYSTERIA_USER" "${HYSTERIA_USER:-}"
   require_var "HYSTERIA_PASSWORD" "${HYSTERIA_PASSWORD:-}"
+  require_var "HYSTERIA_MASQUERADE_URL" "${HYSTERIA_MASQUERADE_URL:-}"
+  validate_http_url "HYSTERIA_MASQUERADE_URL" "$HYSTERIA_MASQUERADE_URL"
   require_var "CERT_FULLCHAIN" "${CERT_FULLCHAIN:-}"
   require_var "CERT_PRIVKEY" "${CERT_PRIVKEY:-}"
   validate_port "HYSTERIA_PORT" "${HYSTERIA_PORT:-}"
@@ -77,6 +107,17 @@ if bool_is_true "$ENABLE_HYSTERIA"; then
   HYSTERIA_PORT_JSON="$HYSTERIA_PORT"
   HYSTERIA_UP_MBPS_JSON="$HYSTERIA_UP_MBPS"
   HYSTERIA_DOWN_MBPS_JSON="$HYSTERIA_DOWN_MBPS"
+
+  case "${HYSTERIA_OBFS_TYPE:-}" in
+    "") ;;
+    salamander|gecko)
+      require_var "HYSTERIA_OBFS_PASSWORD" "${HYSTERIA_OBFS_PASSWORD:-}"
+      ;;
+    *)
+      printf 'HYSTERIA_OBFS_TYPE must be empty, salamander, or gecko.\n' >&2
+      exit 1
+      ;;
+  esac
 fi
 
 jq -n \
@@ -94,6 +135,9 @@ jq -n \
   --arg hysteria_user "${HYSTERIA_USER:-}" \
   --arg hysteria_password "${HYSTERIA_PASSWORD:-}" \
   --arg hysteria_domain "${HYSTERIA_DOMAIN:-}" \
+  --arg hysteria_masquerade_url "${HYSTERIA_MASQUERADE_URL:-}" \
+  --arg hysteria_obfs_type "${HYSTERIA_OBFS_TYPE:-}" \
+  --arg hysteria_obfs_password "${HYSTERIA_OBFS_PASSWORD:-}" \
   --arg cert_fullchain "${CERT_FULLCHAIN:-}" \
   --arg cert_privkey "${CERT_PRIVKEY:-}" \
   '{
@@ -131,7 +175,7 @@ jq -n \
         }
       ] else [] end) +
       (if $enable_hysteria then [
-        {
+        ({
           type: "hysteria2",
           tag: "in-hysteria2",
           listen: "::",
@@ -144,13 +188,23 @@ jq -n \
               password: $hysteria_password
             }
           ],
+          masquerade: {
+            type: "proxy",
+            url: $hysteria_masquerade_url,
+            rewrite_host: true
+          },
           tls: {
             enabled: true,
             server_name: $hysteria_domain,
             certificate_path: $cert_fullchain,
             key_path: $cert_privkey
           }
-        }
+        } + (if $hysteria_obfs_type != "" then {
+          obfs: {
+            type: $hysteria_obfs_type,
+            password: $hysteria_obfs_password
+          }
+        } else {} end))
       ] else [] end)),
     outbounds: [
       {

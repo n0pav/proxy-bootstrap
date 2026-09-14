@@ -5,7 +5,7 @@
 Production-ready bootstrap for a clean Ubuntu `22.04` or `24.04` VPS that installs:
 
 - `VLESS + Reality` on `443/tcp`
-- `Hysteria2` on `8443/udp`
+- `Hysteria2` on `443/udp` (it can share the port number with VLESS on TCP)
 - `certbot` certificate issuance for Hysteria2
 - managed logging, health checks, systemd, sysctl and firewall/NAT setup
 
@@ -15,7 +15,7 @@ All automation is non-interactive and driven by `.env`.
 
 1. Copy the repo to the server.
 2. Copy `.env.example` to `.env`.
-3. Fill in at least `HYSTERIA_DOMAIN` and `LETSENCRYPT_EMAIL`.
+3. For VLESS, set `REALITY_SERVER_NAME`. For Hysteria2, set `HYSTERIA_DOMAIN`, `LETSENCRYPT_EMAIL`, and `HYSTERIA_MASQUERADE_URL`.
 4. Make sure the domain already points to the server IPv4.
 5. Run:
 
@@ -35,19 +35,33 @@ Required variables:
 Important optional variables:
 
 - `ENABLE_VLESS` / `ENABLE_HYSTERIA`: choose `VLESS only`, `Hysteria2 only`, or `both`
+- `VLESS_PORT` / `HYSTERIA_PORT`: TCP and UDP may both use the default port number `443`
+- `REALITY_FINGERPRINT`: client-side uTLS fingerprint hint; `chrome` is the compatibility default
+- `HYSTERIA_OBFS_TYPE`: empty, `salamander`, or `gecko`
 - `PRIMARY_INTERFACE`: override auto-detected outbound interface for NAT
 - `SERVER_IPV4`: override auto-detected public IPv4
 - `FIREWALL_BACKEND`: `auto`, `ufw`, `iptables`, `none`
 - `CERTBOT_STAGING`: set to `true` during dry runs to avoid Let's Encrypt rate limits
-- `VLESS_UUID`, `REALITY_PRIVATE_KEY`, `REALITY_PUBLIC_KEY`, `REALITY_SHORT_ID`, `HYSTERIA_PASSWORD`: pre-seed secrets instead of generating them
+- `VLESS_UUID`, `REALITY_PRIVATE_KEY`, `REALITY_PUBLIC_KEY`, `REALITY_SHORT_ID`, `HYSTERIA_PASSWORD`, `HYSTERIA_OBFS_PASSWORD`: pre-seed secrets instead of generating them
 
 Protocol-specific requirements:
 
 - when `ENABLE_VLESS=true`, `REALITY_SERVER_NAME` is required
-- when `ENABLE_HYSTERIA=true`, `HYSTERIA_DOMAIN` and `LETSENCRYPT_EMAIL` are required
+- when `ENABLE_HYSTERIA=true`, `HYSTERIA_DOMAIN`, `LETSENCRYPT_EMAIL`, and `HYSTERIA_MASQUERADE_URL` are required
 - at least one of the two protocol flags must be `true`
 
 State for generated secrets and managed UFW changes is stored in `/etc/sing-box/bootstrap.env`.
+
+Quote `.env` values containing shell characters, for example `HYSTERIA_MASQUERADE_URL='https://example.org/?a=1&b=2'`.
+
+### Camouflage settings
+
+- `REALITY_SERVER_NAME` has no global fallback. Choose a stable TLS 1.3 + HTTP/2 target explicitly for each VPS, preferably one that is network-close to the server.
+- `REALITY_FINGERPRINT` is configurable, but uTLS emulation remains fingerprintable; treat it as a client-compatibility setting, not an invisibility guarantee.
+- Without Hysteria2 obfs, unauthenticated HTTP/3 requests are reverse-proxied to `HYSTERIA_MASQUERADE_URL`.
+- `salamander` is supported by the stable sing-box package. With obfs enabled, ordinary HTTP/3 probes time out before reaching the masquerade handler; obfs and masquerade protect different traffic profiles.
+- `gecko` currently requires sing-box `1.14` testing and a Gecko-capable client. Set `SING_BOX_PACKAGE=sing-box-beta` on the server until 1.14 is stable. Treat it as experimental.
+- Enabling or changing obfs requires re-importing the generated Hysteria2 link on every client.
 
 ## Install
 
@@ -65,7 +79,7 @@ What `install.sh` does:
 - configures firewall rules and managed NAT without duplication
 - generates secrets only when missing
 - issues or reuses a Let's Encrypt certificate
-- writes `/etc/sing-box/config.json`
+- validates a temporary sing-box config, then atomically writes `/etc/sing-box/config.json`
 - enables and starts `sing-box`
 - runs `scripts/healthcheck.sh`
 
@@ -95,6 +109,8 @@ sudo bash update.sh
 ```
 
 `update.sh` re-runs the installer, attempts certificate renewal, restarts `sing-box`, then runs the healthcheck.
+
+Before updating an older installation, set `REALITY_SERVER_NAME` if VLESS previously relied on the implicit `github.com` fallback, and add `HYSTERIA_MASQUERADE_URL` when Hysteria2 is enabled. An explicitly configured old `HYSTERIA_PORT=8443` remains unchanged; set it to `443` when clients and provider firewall rules are ready to migrate.
 
 ## Uninstall
 
@@ -130,7 +146,7 @@ Useful checks:
 
 ```bash
 sudo systemctl status sing-box --no-pager
-sudo ss -tulpn | grep -E ':(80|443|8443)'
+sudo ss -tulpn | grep -E ':(80|443)'
 sudo sing-box check -c /etc/sing-box/config.json
 ```
 
@@ -142,6 +158,8 @@ If certificate issuance fails:
 
 If Hysteria2 fails:
 
-- verify `8443/udp` is reachable
+- verify the configured `HYSTERIA_PORT` (default `443/udp`) is reachable
 - verify the certificate matches `HYSTERIA_DOMAIN`
+- verify `HYSTERIA_MASQUERADE_URL` is reachable from the VPS
+- if obfs is enabled, verify the client uses the same type and password
 - verify the password from `/etc/sing-box/client-links.txt`
