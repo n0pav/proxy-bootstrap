@@ -175,11 +175,11 @@ check_os() {
   . /etc/os-release
 
   version_id="${VERSION_ID:-}"
-  [ "${ID:-}" = "ubuntu" ] || fatal "Unsupported OS: ${ID:-unknown}. Only Ubuntu 22.04 and 24.04 are supported."
+  [ "${ID:-}" = "ubuntu" ] || fatal "Unsupported OS: ${ID:-unknown}. Only Ubuntu 22.04, 24.04 and 26.04 are supported."
 
   case "$version_id" in
-    22.04|24.04) ;;
-    *) fatal "Unsupported Ubuntu version: $version_id. Only 22.04 and 24.04 are supported." ;;
+    22.04|24.04|26.04) ;;
+    *) fatal "Unsupported Ubuntu version: $version_id. Only 22.04, 24.04 and 26.04 are supported." ;;
   esac
 }
 

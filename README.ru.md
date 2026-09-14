@@ -2,7 +2,7 @@
 
 [**English 🇺🇸**](README.md) / [**Русский 🇷🇺**](README.ru.md)
 
-`Proxy Bootstrap` это non-interactive bootstrap-репозиторий для чистой VPS на Ubuntu `22.04` или `24.04`, который устанавливает:
+`Proxy Bootstrap` это non-interactive bootstrap-репозиторий для чистой VPS на Ubuntu `22.04`, `24.04` или `26.04`, который устанавливает:
 
 - `VLESS + Reality` на `443/tcp`
 - `Hysteria2` на `443/udp` (номер порта можно делить с VLESS на TCP)
