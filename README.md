@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Proxy Bootstrap</h1>
-  <p>A Remnawave panel with a local VPN node, or standalone sing-box.<br>Set up your Ubuntu VPS from one configuration file.</p>
+  <p>A sing-box or Xray panel with subscriptions, or standalone sing-box.<br>Set up your Ubuntu VPS from one configuration file.</p>
   <p>
     <a href="README.md">🇺🇸 <strong>English</strong></a>
     &nbsp;·&nbsp;
@@ -25,14 +25,14 @@ Configuration comes from `.env`; the installer runs without interactive prompts.
 
 ## Choose a mode
 
-| | Remnawave | Standalone |
-| --- | --- | --- |
-| Best for | Managing users, limits and subscriptions in a panel | Connecting directly using generated client links |
-| Installed software | Remnawave panel + local Xray node, PostgreSQL, Valkey, Nginx via Docker Compose | sing-box with systemd |
-| Client configuration | Personal subscription per user | Generated VLESS / Hysteria2 links |
-| Configuration example | [`.env.remnawave.example`](.env.remnawave.example) | [`.env.example`](.env.example) |
-| Deployment mode | `remnawave` | `standalone` (default) |
-| Full guide | [Remnawave](docs/remnawave.md) | [Standalone](docs/standalone.md) |
+| | 2S-UI | Remnawave | Standalone |
+| --- | --- | --- | --- |
+| Best for | A sing-box panel with users and subscriptions | An Xray panel with users and subscriptions | Direct connections without a panel |
+| Installed software | 2S-UI (sing-box + SQLite), Nginx via Docker | Remnawave + Xray node, PostgreSQL, Valkey, Nginx via Docker | sing-box with systemd |
+| Client configuration | Personal subscription | Personal subscription | VLESS / Hysteria2 links |
+| Configuration example | [`.env.2s-ui.example`](.env.2s-ui.example) | [`.env.remnawave.example`](.env.remnawave.example) | [`.env.example`](.env.example) |
+| Deployment mode | `2s-ui` | `remnawave` | `standalone` (default) |
+| Full guide | [2S-UI](docs/2s-ui.md) | [Remnawave](docs/remnawave.md) | [Standalone](docs/standalone.md) |
 
 Choose one mode before installing. Changing `DEPLOYMENT_MODE` does not migrate
 an existing installation; the installer refuses to switch modes in place.
@@ -45,8 +45,8 @@ Use a clean **Ubuntu 22.04, 24.04 or 26.04** server with root or `sudo` access
 and a public IPv4 address. For Remnawave, allow roughly **4 GB RAM** as a starting
 point; see its [requirements](docs/remnawave.md) for details.
 
-Point the panel domain (Remnawave) and the Hysteria2 domain, if enabled, to the
-VPS using DNS **A** records. For Remnawave, use DNS-only records without CDN
+Point the panel domain (2S-UI or Remnawave) and the Hysteria2 domain, if enabled, to the
+VPS using DNS **A** records. For panel modes, use DNS-only records without CDN
 proxying or AAAA records. Standalone with VLESS only does not need your own domain.
 
 Allow the ports needed by your configuration in the provider firewall:
@@ -55,11 +55,11 @@ Allow the ports needed by your configuration in the provider firewall:
 | --- | --- | --- |
 | `443/tcp` | VLESS Reality | VLESS enabled |
 | `443/udp` | Hysteria2 | Hysteria2 enabled |
-| `8443/tcp` | Panel and subscriptions | Remnawave |
-| `80/tcp` | Let's Encrypt issuance and renewal | Remnawave, or standalone with Hysteria2 |
+| `8443/tcp` | Panel and subscriptions | 2S-UI or Remnawave |
+| `80/tcp` | Let's Encrypt issuance and renewal | Either panel mode, or standalone with Hysteria2 |
 
 Keep your SSH port accessible. TCP and UDP can share the port number `443`.
-For Remnawave, Docker publishes VPN and HTTPS ports independently of UFW;
+In panel modes, Docker publishes VPN and HTTPS ports independently of UFW;
 use the provider firewall for source-IP restrictions.
 
 Clone or copy the repository to the VPS, then enter its directory:
@@ -70,6 +70,23 @@ cd proxy-bootstrap
 ```
 
 ### 2. Configure and install one mode
+
+#### 2S-UI — sing-box panel and personal subscriptions
+
+```bash
+cp .env.2s-ui.example .env
+nano .env
+sudo bash install.sh
+sudo cat /opt/proxy-bootstrap/2s-ui/credentials.txt
+```
+
+Set `PANEL_DOMAIN`, `LETSENCRYPT_EMAIL`, `REALITY_SERVER_NAME` and
+`HYSTERIA_MASQUERADE_URL`. Behind cloud NAT, also set `SERVER_IPV4`.
+Optionally set `SUBSCRIPTION_DOMAIN` and add its A record before installation.
+Open `https://YOUR_PANEL_DOMAIN:8443/app/`, create a client in **Clients**, select
+the prepared VLESS/Hysteria2 inbounds and copy its subscription link.
+
+[Full 2S-UI guide →](docs/2s-ui.md)
 
 #### Remnawave — panel and personal subscriptions
 
@@ -83,6 +100,11 @@ In `.env`, set `PANEL_DOMAIN` and `LETSENCRYPT_EMAIL`. Set `REALITY_SERVER_NAME`
 when VLESS is enabled and `HYSTERIA_MASQUERADE_URL` when Hysteria2 is enabled.
 An empty `HYSTERIA_DOMAIN` reuses the panel domain. Set `SERVER_IPV4` explicitly
 when the VPS is behind cloud NAT.
+
+Optionally set `SUBSCRIPTION_DOMAIN=sub.example.com` to serve subscriptions on
+a separate hostname on the same VPS. Add its DNS A record; it shares
+`PANEL_HTTPS_PORT` (default `8443`). Leave it empty to use the panel domain.
+Choose this before installation; see the [separate-domain setup](docs/remnawave.md#optional-separate-subscription-domain).
 
 Read the generated administrator credentials:
 
@@ -115,7 +137,7 @@ sudo cat /etc/sing-box/client-links.txt
 
 [Full standalone guide →](docs/standalone.md)
 
-Both examples enable both protocols. Set `ENABLE_VLESS=false` or
+All three examples enable both protocols. Set `ENABLE_VLESS=false` or
 `ENABLE_HYSTERIA=false` to disable one; at least one must remain enabled.
 Keep credentials and client/subscription links private.
 
@@ -130,11 +152,13 @@ Run these commands from the repository directory on the VPS:
 | Uninstall | `sudo bash uninstall.sh` |
 | Test VPN traffic through Remnawave | `sudo bash scripts/remnawave.sh smoke-test` |
 | Back up Remnawave | `sudo bash scripts/remnawave.sh backup` |
+| Test VPN traffic through 2S-UI | `sudo bash scripts/2s-ui.sh smoke-test` |
+| Back up 2S-UI | `sudo bash scripts/2s-ui.sh backup` |
 
-Remnawave updates back up the database and configuration before applying pinned
-image versions. Its uninstall preserves data by default; `--purge` removes managed
+Both panel modes back up the database and configuration before applying pinned
+image versions during updates. Their uninstall preserves data by default; `--purge` removes managed
 data after a backup. Standalone uninstall removes its managed configuration and
-secrets. Both modes keep Let's Encrypt certificates.
+secrets. All modes keep Let's Encrypt certificates.
 
 See the mode-specific guides before [restoring Remnawave](docs/remnawave.md#updates-and-backups)
 or [updating an older standalone installation](docs/standalone.md#update).
@@ -143,18 +167,20 @@ or [updating an older standalone installation](docs/standalone.md#update).
 
 | Guide | 🇺🇸 English | 🇷🇺 Русский |
 | --- | --- | --- |
+| 2S-UI: sing-box panel, subscriptions, backups and diagnostics | [Read](docs/2s-ui.md) | [Читать](docs/2s-ui.ru.md) |
 | Remnawave: setup, users, subscriptions, backups and diagnostics | [Read](docs/remnawave.md) | [Читать](docs/remnawave.ru.md) |
 | Standalone: configuration, camouflage, updates and troubleshooting | [Read](docs/standalone.md) | [Читать](docs/standalone.ru.md) |
 
 ## Verification
 
-The **Docker: locally tested** badge records a completed local Remnawave test run.
+The **Docker: locally tested** badge records completed local tests of both panel modes.
 
-- **Passed:** 13 automated tests and shell script syntax checks.
+- **Passed:** automated tests and shell script syntax checks.
 - **Passed in Docker:** personal subscriptions, real traffic through both protocols,
   backup restoration and certificate reload.
 - **Pending on a VPS:** full installation on clean Ubuntu, Let's Encrypt renewal
   and connectivity from an external network.
 
-See the [test guide](docs/remnawave.md#developer-checks) for commands to reproduce the checks.
+Reproduce the checks using the [Remnawave](docs/remnawave.md#developer-checks) and
+[2S-UI](docs/2s-ui.md#developer-checks) test guides.
 Automated CI is not configured yet; the badge represents a local test result.

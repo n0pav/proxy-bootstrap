@@ -5,7 +5,9 @@ dispatch_deployment() {
   shift
   local root mode installed=""
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  if [ -f /opt/proxy-bootstrap/remnawave/state.json ]; then
+  if [ -f /opt/proxy-bootstrap/2s-ui/state.json ]; then
+    installed=2s-ui
+  elif [ -f /opt/proxy-bootstrap/remnawave/state.json ]; then
     installed=remnawave
   elif [ -f /etc/sing-box/bootstrap.env ]; then
     installed=standalone
@@ -19,8 +21,8 @@ dispatch_deployment() {
     printf '%s' "${DEPLOYMENT_MODE:-${installed:-standalone}}"
   )"
   case "$mode" in
-    standalone|remnawave) ;;
-    *) echo "Invalid DEPLOYMENT_MODE: expected standalone or remnawave." >&2; exit 1 ;;
+    standalone|remnawave|2s-ui) ;;
+    *) echo "Invalid DEPLOYMENT_MODE: expected standalone, remnawave or 2s-ui." >&2; exit 1 ;;
   esac
   if [ -n "$installed" ] && [ "$mode" != "$installed" ]; then
     echo "Installed mode is $installed. Changing DEPLOYMENT_MODE is not a migration." >&2
@@ -28,5 +30,7 @@ dispatch_deployment() {
   fi
   if [ "$mode" = remnawave ]; then
     exec bash "$root/scripts/remnawave.sh" "$action" "$@"
+  elif [ "$mode" = 2s-ui ]; then
+    exec bash "$root/scripts/2s-ui.sh" "$action" "$@"
   fi
 }

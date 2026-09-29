@@ -34,11 +34,15 @@ class SettingsTests(unittest.TestCase):
 
     def test_rejects_invalid_settings_before_any_installation(self):
         cases = [{'PANEL_DOMAIN': 'x;touch.bad'}, {'PANEL_DOMAIN': 'https://panel.example.com'},
+                 {'SUBSCRIPTION_DOMAIN': 'https://sub.example.com'}, {'SUBSCRIPTION_DOMAIN': 'sub.example.com:8443'},
+                 {'SUBSCRIPTION_DOMAIN': 'sub.example.com/api/sub'}, {'SUBSCRIPTION_DOMAIN': '*.example.com'},
+                 {'SUBSCRIPTION_DOMAIN': 'sub.example.com', 'HYSTERIA_MASQUERADE_URL': 'https://sub.example.com'},
                  {'PANEL_HTTPS_PORT': '443'}, {'REMNAWAVE_API_PORT': '80'}, {'VLESS_PORT': '2222'},
                  {'ENABLE_VLESS': 'false', 'ENABLE_HYSTERIA': 'false'}, {'ENABLE_HYSTERIA': 'maybe'},
                  {'HYSTERIA_OBFS_TYPE': 'gecko'}, {'HYSTERIA_MASQUERADE_URL': 'file:///etc/passwd'},
                  {'HYSTERIA_MASQUERADE_URL': 'https://panel.example.com'}, {'SERVER_IPV4': 'invalid'},
                  {'VLESS_UUID': 'existing-user'}, {'REALITY_PRIVATE_KEY': 'existing-private-key'}]
+        cases.extend({'REALITY_MIN_CLIENT_VERSION': value} for value in ('', '1.8', '1.8.1.0', '256.1.1', '-1.8.1', 'any'))
         for case in cases:
             with self.subTest(case=case), self.assertRaises(config.Error):
                 config.settings({**example_env(), **case})
@@ -53,6 +57,21 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(hy['streamSettings']['hysteriaSettings']['masquerade']['type'], 'proxy')
         self.assertEqual(hy['streamSettings']['finalmask']['udp'][0]['settings']['password'], state['secrets']['obfs_password'])
 
+    def test_reality_client_compatibility_is_explicit_and_legacy_default_is_preserved(self):
+        for version in (None, '26.3.27', '1.8.1'):
+            with self.subTest(version=version):
+                env = example_env()
+                if version is not None:
+                    env['REALITY_MIN_CLIENT_VERSION'] = version
+                state = config.new_state(config.settings(env))
+                state['secrets']['reality_private_key'] = 'key'
+                reality = config.xray_config(state)['inbounds'][0]['streamSettings']['realitySettings']
+                self.assertEqual(reality['minClientVer'], version or '26.3.27')
+                self.assertEqual(reality['privateKey'], 'key')
+                self.assertEqual(reality['shortIds'], [state['secrets']['short_id']])
+        del state['config']['reality_min_client_version']
+        self.assertEqual(config.xray_config(state)['inbounds'][0]['streamSettings']['realitySettings']['minClientVer'], '26.3.27')
+
     def test_compose_does_not_publish_control_plane_or_database(self):
         state = config.new_state(config.settings(example_env()))
         services = config.compose_config(state)['services']
@@ -63,6 +82,56 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn('network_mode', services['node'])
         self.assertEqual(services['panel']['environment']['SUB_PUBLIC_DOMAIN'], 'panel.example.com:8443/api/sub')
         self.assertEqual(services['panel']['environment']['FRONT_END_DOMAIN'], 'https://panel.example.com:8443')
+
+    def test_optional_subscription_domain_and_https_port(self):
+        for name in (None, '', 'panel.example.com', 'SUB.example.com'):
+            for port in (443, 8443):
+                with self.subTest(name=name, port=port):
+                    env = {**example_env(), 'ENABLE_VLESS': 'false', 'PANEL_HTTPS_PORT': str(port)}
+                    if name is not None:
+                        env['SUBSCRIPTION_DOMAIN'] = name
+                    state = config.new_state(config.settings(env))
+                    expected = (name or 'panel.example.com').lower() + ('' if port == 443 else ':8443')
+                    self.assertEqual(config.subscription_origin(state['config']), 'https://' + expected)
+                    services = config.compose_config(state)['services']
+                    self.assertEqual(services['panel']['environment']['SUB_PUBLIC_DOMAIN'], expected + '/api/sub')
+                    self.assertEqual(services['panel']['environment']['FRONT_END_DOMAIN'], config.panel_origin(state['config']))
+                    self.assertEqual(services['nginx']['ports'], [f'0.0.0.0:{port}:8443'])
+
+    def test_certificate_covers_all_domains_without_duplicates(self):
+        for hysteria in ('panel.example.com', 'sub.example.com', 'vpn.example.com'):
+            with self.subTest(hysteria=hysteria):
+                state = config.new_state(config.settings({**example_env(),
+                    'SUBSCRIPTION_DOMAIN': 'sub.example.com', 'HYSTERIA_DOMAIN': hysteria}))
+                with patch('main.run') as run, patch('main.copy_certificates'):
+                    lifecycle.obtain_certificate(state)
+                command = run.call_args.args[0]
+                domains = [command[i + 1] for i, value in enumerate(command) if value == '-d']
+                expected = ['panel.example.com', 'sub.example.com']
+                if hysteria == 'vpn.example.com':
+                    expected.append(hysteria)
+                self.assertEqual(domains, expected)
+        c = config.settings({**example_env(), 'ENABLE_HYSTERIA': 'false'})
+        self.assertEqual(config.certificate_domains(c), ['panel.example.com'])
+
+    def test_subscription_dns_is_validated_before_installation(self):
+        c = config.settings({**example_env(), 'SERVER_IPV4': '8.8.8.8', 'SUBSCRIPTION_DOMAIN': 'sub.example.com'})
+        for failure in (None, 'missing', 'wrong_ipv4', 'ipv6'):
+            with self.subTest(failure=failure):
+                def resolve(name, port, family):
+                    if name == 'sub.example.com' and failure == 'missing':
+                        raise lifecycle.socket.gaierror('not found')
+                    if family == lifecycle.socket.AF_INET6:
+                        return [(family, 0, 0, '', ('::1', 0, 0, 0))] if name == 'sub.example.com' and failure == 'ipv6' else []
+                    address = '8.8.4.4' if name == 'sub.example.com' and failure == 'wrong_ipv4' else '8.8.8.8'
+                    return [(family, 0, 0, '', (address, 0))]
+                with patch('main.socket.getaddrinfo', side_effect=resolve) as resolver:
+                    if failure:
+                        with self.assertRaisesRegex(config.Error, 'sub.example.com'):
+                            lifecycle.detect_network(c)
+                    else:
+                        lifecycle.detect_network(c)
+                        self.assertIn('sub.example.com', [call.args[0] for call in resolver.call_args_list])
 
     def test_state_is_atomic_and_private(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -102,6 +171,20 @@ class ObjectAPI:
 
 
 class ResumeTests(unittest.TestCase):
+    def test_legacy_state_keeps_original_subscription_urls_and_can_resume(self):
+        current = config.settings(example_env())
+        legacy = config.new_state(copy.deepcopy(current))
+        del legacy['config']['subscription_domain']
+        del legacy['config']['reality_min_client_version']
+        self.assertEqual(config.subscription_origin(legacy['config']), config.panel_origin(current))
+        with tempfile.TemporaryDirectory() as directory:
+            config.save_state(legacy, directory)
+            upgraded = lifecycle.read_state(directory)
+        self.assertEqual(upgraded['config'], current)
+        self.assertEqual(upgraded['secrets'], legacy['secrets'])
+        self.assertEqual(config.compose_config(upgraded), config.compose_config(legacy))
+        self.assertEqual(config.nginx_config(upgraded), config.nginx_config(legacy))
+
     def test_lost_creation_response_does_not_duplicate_profile(self):
         remote = ObjectAPI()
         remote.fail_after_create = True

@@ -76,6 +76,7 @@ def settings(env):
         raise Error('LETSENCRYPT_EMAIL is required for panel HTTPS.')
     config = {
         'panel_domain': panel,
+        'subscription_domain': domain(env.get('SUBSCRIPTION_DOMAIN') or panel, 'SUBSCRIPTION_DOMAIN'),
         'panel_port': integer(env, 'PANEL_HTTPS_PORT', 8443),
         'api_port': integer(env, 'REMNAWAVE_API_PORT', 3000),
         'email': email,
@@ -101,6 +102,10 @@ def settings(env):
         tcp_ports.append(config['vless_port'])
         config['reality_server'] = domain(env.get('REALITY_SERVER_NAME', ''), 'REALITY_SERVER_NAME')
         config['reality_port'] = integer(env, 'REALITY_HANDSHAKE_PORT', 443)
+        version = env.get('REALITY_MIN_CLIENT_VERSION', '26.3.27')
+        if not re.fullmatch(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}', version) or any(int(part) > 255 for part in version.split('.')):
+            raise Error('REALITY_MIN_CLIENT_VERSION must contain three numbers from 0 to 255, e.g. 26.3.27 or 1.8.1.')
+        config['reality_min_client_version'] = version
         config['fingerprint'] = env.get('REALITY_FINGERPRINT', 'chrome')
         if config['fingerprint'] not in ('chrome', 'firefox', 'edge', 'safari', '360', 'qq', 'ios', 'android', 'random', 'randomized'):
             raise Error('Unsupported REALITY_FINGERPRINT.')
@@ -118,7 +123,7 @@ def settings(env):
             valid_url = False
         if not valid_url:
             raise Error('HYSTERIA_MASQUERADE_URL must be an absolute HTTP(S) URL.')
-        if parsed.hostname in (panel, config['hysteria_domain'], config['server_ipv4']):
+        if parsed.hostname in (panel, config['subscription_domain'], config['hysteria_domain'], config['server_ipv4']):
             raise Error('HYSTERIA_MASQUERADE_URL must not point back to this installation.')
         config['masquerade'] = url
         config['obfs'] = env.get('HYSTERIA_OBFS_TYPE', '')
@@ -158,6 +163,23 @@ def panel_origin(config):
     return 'https://' + config['panel_domain'] + port
 
 
+def subscription_domain(config):
+    # States written before separate subscription domains existed have no such key.
+    return config.get('subscription_domain', config['panel_domain'])
+
+
+def subscription_origin(config):
+    port = '' if config['panel_port'] == 443 else ':' + str(config['panel_port'])
+    return 'https://' + subscription_domain(config) + port
+
+
+def certificate_domains(config):
+    names = [config['panel_domain'], subscription_domain(config)]
+    if config['hysteria']:
+        names.append(config['hysteria_domain'])
+    return list(dict.fromkeys(names))
+
+
 def xray_config(state):
     c, s = state['config'], state['secrets']
     inbounds = []
@@ -169,6 +191,8 @@ def xray_config(state):
                 'network': 'tcp', 'security': 'reality',
                 'realitySettings': {
                     'show': False, 'dest': f"{c['reality_server']}:{c['reality_port']}",
+                    # Keep the Xray default explicit; sing-box compatibility is an opt-in.
+                    'minClientVer': c.get('reality_min_client_version', '26.3.27'),
                     'xver': 0, 'serverNames': [c['reality_server']],
                     'privateKey': s['reality_private_key'], 'shortIds': [s['short_id']],
                 },
@@ -233,7 +257,7 @@ def compose_config(state):
                 'WEBHOOK_SECRET_HEADER': s['webhook_secret'], 'IS_TELEGRAM_NOTIFICATIONS_ENABLED': 'false',
                 'FRONT_END_DOMAIN': panel_origin(c),
                 'PANEL_DOMAIN': panel_origin(c).removeprefix('https://'),
-                'SUB_PUBLIC_DOMAIN': panel_origin(c).removeprefix('https://') + '/api/sub',
+                'SUB_PUBLIC_DOMAIN': subscription_origin(c).removeprefix('https://') + '/api/sub',
             }, 'ports': [f"127.0.0.1:{c['api_port']}:3000"],
                 'volumes': ['valkey-socket:/var/run/valkey', './certs:' + CERT_PATH + ':ro'],
                 'depends_on': {'db': {'condition': 'service_healthy'}, 'redis': {'condition': 'service_healthy'}},
@@ -252,34 +276,58 @@ def compose_config(state):
 
 
 def nginx_config(state):
+    c = state['config']
+    subscription_server = ''
+    if subscription_domain(c) != c['panel_domain']:
+        subscription_server = '''
+    server {
+        listen 8443 ssl;
+        http2 on;
+        server_name %s;
+        # Only subscription endpoints are public on this hostname.
+        location = /api/sub { return 404; }
+        location /api/sub/ {
+            limit_except GET { deny all; }
+            proxy_pass http://panel:3000;
+        }
+        location / { return 404; }
+    }
+''' % subscription_domain(c)
     return '''events {}
 http {
     server_tokens off;
     # Subscription paths contain credentials. Do not retain them in access logs.
     access_log off;
     map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+    ssl_certificate /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 20m;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 120s;
+    server {
+        listen 8443 ssl default_server;
+        ssl_reject_handshake on;
+        server_name _;
+        return 404;
+    }
     server {
         listen 8443 ssl;
         http2 on;
         server_name %s;
-        ssl_certificate /etc/nginx/certs/fullchain.pem;
-        ssl_certificate_key /etc/nginx/certs/privkey.key;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        client_max_body_size 20m;
         location / {
             proxy_pass http://panel:3000;
-            proxy_http_version 1.1;
-            proxy_set_header Host $http_host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $remote_addr;
-            proxy_set_header X-Forwarded-Proto https;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_read_timeout 120s;
         }
     }
+%s
 }
-''' % state['config']['panel_domain']
+''' % (c['panel_domain'], subscription_server)
 
 
 def render(state, directory=STACK):

@@ -21,8 +21,9 @@ import tempfile
 import time
 
 from api import API, bootstrap, cleanup_probe, create_probe, prepare, wait_node
-from config import (CERT_NAME, Error, IMAGES, STACK, atomic_write, new_state,
-                    panel_origin, render, save_state, settings)
+from config import (CERT_NAME, Error, IMAGES, STACK, atomic_write, certificate_domains,
+                    new_state, panel_origin, render, save_state, settings,
+                    subscription_domain, subscription_origin)
 
 
 HOOK = Path('/etc/letsencrypt/renewal-hooks/deploy/proxy-bootstrap-remnawave')
@@ -62,6 +63,9 @@ def read_state(directory=None):
         state = json.loads((Path(directory) / 'state.json').read_text())
         if state['schema'] != 1:
             raise Error('Unsupported installation state version.')
+        state['config'].setdefault('subscription_domain', state['config']['panel_domain'])
+        if state['config']['vless']:
+            state['config'].setdefault('reality_min_client_version', '26.3.27')
         return state
     except (FileNotFoundError, KeyError, ValueError) as exc:
         raise Error('Installation state is missing or invalid. Restore it from backup; do not regenerate secrets.') from exc
@@ -90,10 +94,7 @@ def detect_network(c):
         c['server_ipv4'] = address
     if not ipaddress.IPv4Address(c['server_ipv4']).is_global:
         raise Error('SERVER_IPV4 must be the public IPv4 of the VPS.')
-    domains = {c['panel_domain']}
-    if c['hysteria']:
-        domains.add(c['hysteria_domain'])
-    for name in domains:
+    for name in certificate_domains(c):
         try:
             addresses = {item[4][0] for item in socket.getaddrinfo(name, None, socket.AF_INET)}
         except socket.gaierror as exc:
@@ -222,9 +223,9 @@ def copy_certificates():
 def obtain_certificate(state):
     c = state['config']
     args = ['certbot', 'certonly', '--standalone', '--non-interactive', '--agree-tos', '--no-directory-hooks',
-            '--keep-until-expiring', '--cert-name', CERT_NAME, '--email', c['email'], '-d', c['panel_domain']]
-    if c['hysteria'] and c['hysteria_domain'] != c['panel_domain']:
-        args += ['-d', c['hysteria_domain']]
+            '--keep-until-expiring', '--cert-name', CERT_NAME, '--email', c['email']]
+    for name in certificate_domains(c):
+        args += ['-d', name]
     if c['staging']:
         args += ['--test-cert']
     # certbot performs issuance only when needed; standalone owns TCP/80 during that operation.
@@ -252,6 +253,16 @@ def healthcheck(state, wait=True):
     response = json.loads(run(command, capture=True).stdout)['response']
     if response['isRegisterAllowed']:
         raise Error('Administrator registration is still open; installation is incomplete.')
+    if subscription_domain(c) != c['panel_domain']:
+        # Check TLS on the subscription domain and reject any accidental panel exposure.
+        for path in ('/', '/api/auth/status'):
+            cmd = ['curl', '--silent', '--show-error', '--noproxy', '*', '--max-time', '20',
+                   '--resolve', f"{subscription_domain(c)}:{c['panel_port']}:127.0.0.1",
+                   '--output', '/dev/null', '--write-out', '%{http_code}', subscription_origin(c) + path]
+            if c['staging']:
+                cmd.insert(1, '--insecure')
+            if run(cmd, capture=True).stdout.strip() != '404':
+                raise Error('The subscription domain must not expose the panel or its administration API.')
     log('OK: panel HTTPS, administrator registration, containers and local Node/Xray.')
 
 
@@ -264,13 +275,13 @@ def smoke_test(state, external=False, check_private_routes=False):
         user = create_probe(state, api, STACK)
         c = state['config']
         # Fetch using curl config on stdin, so the secret URL is absent from process arguments.
-        expected = panel_origin(c) + '/api/sub/' + user['shortUuid']
+        expected = subscription_origin(c) + '/api/sub/' + user['shortUuid']
         if user.get('subscriptionUrl') != expected:
             raise Error('The panel generated an unexpected subscription URL. Check SUB_PUBLIC_DOMAIN.')
         url = user['subscriptionUrl'] + '/json'
         curl_config = 'url = ' + json.dumps(url) + '\n'
         cmd = ['curl', '--fail', '--silent', '--show-error', '--noproxy', '*', '--max-time', '30',
-               '--resolve', f"{c['panel_domain']}:{c['panel_port']}:127.0.0.1", '--config', '-']
+               '--resolve', f"{subscription_domain(c)}:{c['panel_port']}:127.0.0.1", '--config', '-']
         if c['staging']:
             cmd.insert(1, '--insecure')
         configs = json.loads(run(cmd, input=curl_config, capture=True).stdout)
@@ -423,7 +434,8 @@ def install():
 
 def write_credentials(state):
     s = state['secrets']
-    text = (f"Panel: {panel_origin(state['config'])}\nInitial administrator: {s['admin_username']}\n"
+    text = (f"Panel: {panel_origin(state['config'])}\nSubscriptions: {subscription_origin(state['config'])}/api/sub/<token>\n"
+            f"Initial administrator: {s['admin_username']}\n"
             f"Initial password: {s['admin_password']}\nUser squad: {state.get('squad_name', 'VPN Users')}\n"
             'Create a user in this squad, then copy the personal subscription URL from the panel.\n'
             'The initial password may have been changed in the panel.\n')

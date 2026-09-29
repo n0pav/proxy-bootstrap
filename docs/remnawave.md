@@ -2,7 +2,7 @@
 
 [🇺🇸 English](remnawave.md) · [🇷🇺 Русский](remnawave.ru.md) · [Back to README](../README.md)
 
-[Quick start](#quick-start) · [Architecture](#how-the-installation-works) · [Settings](#rerunning-the-installer-and-managing-settings) · [Diagnostics](#checks-and-diagnostics) · [Backups](#updates-and-backups) · [Uninstall](#uninstall) · [For developers](#developer-checks)
+[Quick start](#quick-start) · [Subscription domain](#optional-separate-subscription-domain) · [Architecture](#how-the-installation-works) · [Settings](#rerunning-the-installer-and-managing-settings) · [Diagnostics](#checks-and-diagnostics) · [Backups](#updates-and-backups) · [Uninstall](#uninstall) · [For developers](#developer-checks)
 
 This mode installs Remnawave Panel, a local Remnawave Node running Xray,
 PostgreSQL, Valkey and Nginx through Docker Compose. After installation, create
@@ -58,11 +58,59 @@ The client receives subsequent changes when it refreshes the subscription.
 The subscription link contains an access secret; do not publish it.
 This is a configuration subscription, without billing.
 
+### VLESS client compatibility
+
+The pinned Xray core requires Reality clients advertising version `26.3.27` or
+newer by default. Some clients based on sing-box, including Hiddify, advertise
+`1.8.1` and are rejected even when the subscription keys are correct. For those
+clients, explicitly opt in before installation:
+
+```env
+REALITY_MIN_CLIENT_VERSION=1.8.1
+```
+
+The default is `26.3.27`. Xray warns that lowering this threshold increases the
+risk of detection and IP blocking; choose it only when this compatibility is
+needed. See the [pinned Xray implementation](https://github.com/XTLS/Xray-core/blob/v26.7.28/infra/conf/transport_security.go).
+For an existing installation, edit the VLESS inbound's
+`streamSettings.realitySettings.minClientVer` in the panel's configuration
+profile. Changing `.env` does not overwrite an existing profile. This setting
+does not affect Hysteria2 or guarantee compatibility with every client version.
+
+## Optional separate subscription domain
+
+By default, subscription links use the panel domain:
+`https://panel.example.com:8443/api/sub/<token>`. To use a separate hostname,
+set this in `.env` **before the first installation**:
+
+```env
+PANEL_DOMAIN=panel.example.com
+SUBSCRIPTION_DOMAIN=sub.example.com
+PANEL_HTTPS_PORT=8443
+```
+
+Create a DNS-only **A** record for `sub.example.com` pointing to the same VPS
+public IPv4, without CDN proxying or an AAAA record. The installer validates
+its DNS and includes it in the managed Let's Encrypt certificate. No additional
+server or port is needed: both hostnames share `PANEL_HTTPS_PORT`. Port `443/tcp`
+remains assigned to VLESS by default.
+
+The panel stays at `https://panel.example.com:8443`, and newly displayed
+subscription URLs use `https://sub.example.com:8443/api/sub/<token>`.
+Nginx only forwards subscription GET/HEAD requests under `/api/sub/` on the
+subscription hostname; the panel UI and administration API return `404` there.
+Subscriptions also remain accessible through the panel hostname.
+
+Leave `SUBSCRIPTION_DOMAIN` empty, omit it, or set it to `PANEL_DOMAIN` to keep
+the original single-domain setup. Existing installation states without the new
+setting keep their subscription URLs. Changing domains on an already installed
+deployment is not automated; editing `.env` does not migrate existing links.
+
 ## How the installation works
 
 | Purpose | Published port |
 | --- | --- |
-| Panel and subscriptions over HTTPS | `8443/tcp` |
+| Panel and subscriptions over HTTPS (one or two hostnames) | `8443/tcp` |
 | VLESS Reality | `443/tcp` |
 | Hysteria2 | `443/udp` |
 | Certbot standalone for ACME | `80/tcp` during issuance/renewal |
@@ -117,9 +165,13 @@ sudo docker compose --project-directory /opt/proxy-bootstrap/remnawave \
 The regular health check verifies the containers, panel HTTPS, completed
 administrator registration and a running node/Xray. The smoke test creates
 a temporary user with a 15-minute lifetime and a 100 MB limit, retrieves a real
-JSON subscription over panel HTTPS, starts a temporary Xray client and makes
-an HTTPS request through each enabled protocol. The user is deleted afterwards.
+JSON subscription over HTTPS on the configured subscription domain, starts
+a temporary Xray client and makes an HTTPS request through each enabled protocol.
+The user is deleted afterwards.
 If the process is interrupted, cleanup runs on the next smoke test.
+
+With a separate subscription domain, the health check also verifies its HTTPS
+and confirms that it does not expose the panel UI or authentication API.
 
 By default, the test connects to the node inside the Docker network while
 preserving the keys and TLS settings from the subscription. `--external` uses
@@ -129,8 +181,16 @@ necessary to confirm that the provider allows access to the ports. Test-client
 errors are saved in a private `last-probe.log` in the installation directory.
 The temporary user and container are not intended for ongoing use.
 
-`CERTBOT_STAGING=true` issues a test certificate. Only in this mode do panel HTTPS
-checks skip certificate trust verification, while the test VPN client pins the
+If a client connects but sites do not load, select VLESS and Hysteria2 separately
+instead of automatic selection and compare Wi-Fi with mobile data. A successful
+Xray smoke test does not validate a mobile client's core, DNS or routing settings.
+The Docker network configured by this installer has no IPv6 egress. Use IPv4-only
+DNS/routing in the client, or configure and verify IPv6 for the Docker network
+before sending IPv6 destinations through the VPN. IPv6 on the VPS host alone
+does not provide IPv6 connectivity inside the node container.
+
+`CERTBOT_STAGING=true` issues a test certificate. Only in this mode do panel and
+subscription HTTPS checks skip certificate trust verification, while the test VPN client pins the
 SHA-256 hash of the test certificate. Regular clients do not trust these
 certificates; use `false` for a production installation.
 
@@ -188,15 +248,20 @@ for script in install.sh update.sh uninstall.sh scripts/*.sh templates/*.sh.tpl;
   bash -n "$script" || exit 1
 done
 python3 tests/integration_remnawave.py
+python3 tests/integration_remnawave.py --separate-subscription-domain
 ```
 
-The last command runs the actual pinned containers with a test certificate and
+The last two commands test shared and separate subscription domains respectively.
+Run them one at a time: they use the same Compose project name.
+Each runs the actual pinned containers with a test certificate and
 ports bound only to loopback. It requires Docker, Compose, OpenSSL, registry
 access and internet access. The test refuses to run if a Compose project with
 the same name already exists; it removes its own containers and volumes after
 completion. It does not install packages, change the host firewall or run certbot.
 It also verifies real PostgreSQL dump restoration, preservation of subscription
 links and profile edits, and Nginx/node reload when the certificate changes.
+The separate-domain run verifies certificate hostname coverage, subscription
+GET/HEAD requests and rejection of panel/API requests on the subscription hostname.
 
 Full installation on a clean Ubuntu VPS, Let's Encrypt renewal and connectivity
 from an external network are tested separately.
