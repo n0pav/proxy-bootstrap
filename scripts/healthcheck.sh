@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
+# shellcheck source=deployment-mode.sh
+. "$SCRIPT_DIR/deployment-mode.sh"
+dispatch_deployment healthcheck "$@"
 
 INPUT_VLESS_PORT="${VLESS_PORT:-}"
 INPUT_HYSTERIA_PORT="${HYSTERIA_PORT:-}"

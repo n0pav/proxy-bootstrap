@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/proxy-bootstrap.log"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
+# shellcheck source=scripts/deployment-mode.sh
+. "$SCRIPT_DIR/scripts/deployment-mode.sh"
+dispatch_deployment install "$@"
 STATE_FILE="/etc/sing-box/bootstrap.env"
 CONFIG_DIR="/etc/sing-box"
 CONFIG_FILE="$CONFIG_DIR/config.json"

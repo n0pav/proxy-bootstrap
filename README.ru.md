@@ -1,69 +1,103 @@
-# Proxy Bootstrap для Ubuntu VPS
+<div align="center">
+  <h1>Proxy Bootstrap</h1>
+  <p>Панель Remnawave с локальной VPN-нодой или самостоятельный sing-box.<br>Установка на Ubuntu VPS из одного файла конфигурации.</p>
+  <p>
+    <a href="README.md">🇺🇸 English</a>
+    &nbsp;·&nbsp;
+    <a href="README.ru.md">🇷🇺 <strong>Русский</strong></a>
+  </p>
+  <p>
+    <a href="#быстрый-старт"><img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420?style=flat-square&amp;logo=ubuntu&amp;logoColor=white" alt="Ubuntu 22.04, 24.04, 26.04"></a>
+    <a href="docs/remnawave.ru.md"><img src="https://img.shields.io/badge/VLESS-Reality-2563EB?style=flat-square" alt="VLESS Reality"></a>
+    <a href="docs/remnawave.ru.md"><img src="https://img.shields.io/badge/Hysteria-2-0891B2?style=flat-square" alt="Hysteria2"></a>
+    <a href="#проверки"><img src="https://img.shields.io/badge/Docker-locally_tested-2EA44F?style=flat-square&amp;logo=docker&amp;logoColor=white" alt="Docker: locally tested"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-64748B?style=flat-square" alt="License: MIT"></a>
+  </p>
+  <p>
+    <a href="#быстрый-старт">Быстрый старт</a>
+    &nbsp;·&nbsp; <a href="#управление">Управление</a>
+    &nbsp;·&nbsp; <a href="#документация">Документация</a>
+    &nbsp;·&nbsp; <a href="#проверки">Проверки</a>
+  </p>
+</div>
 
-[**English 🇺🇸**](README.md) / [**Русский 🇷🇺**](README.ru.md)
+Все параметры задаются через `.env`; установщик работает без интерактивных вопросов.
 
-`Proxy Bootstrap` это non-interactive bootstrap-репозиторий для чистой VPS на Ubuntu `22.04`, `24.04` или `26.04`, который устанавливает:
+## Выберите режим
 
-- `VLESS + Reality` на `443/tcp`
-- `Hysteria2` на `443/udp` (номер порта можно делить с VLESS на TCP)
-- сертификат `Let's Encrypt` для `Hysteria2`
-- `systemd`, `sysctl`, firewall/NAT, логирование и healthcheck
+| | Remnawave | Standalone |
+| --- | --- | --- |
+| Для чего | Управление пользователями, лимитами и подписками в панели | Подключение по готовым клиентским ссылкам |
+| Что устанавливается | Панель Remnawave + локальная Xray-нода, PostgreSQL, Valkey, Nginx через Docker Compose | sing-box с systemd |
+| Настройка клиента | Персональная подписка для каждого пользователя | Сгенерированные ссылки VLESS / Hysteria2 |
+| Пример конфигурации | [`.env.remnawave.example`](.env.remnawave.example) | [`.env.example`](.env.example) |
+| Режим установки | `remnawave` | `standalone` (по умолчанию) |
+| Подробная инструкция | [Remnawave](docs/remnawave.ru.md) | [Standalone](docs/standalone.ru.md) |
 
-Все параметры задаются через `.env`.
+Выберите один режим до установки. Изменение `DEPLOYMENT_MODE` не переносит
+существующую установку; скрипт откажется переключать режим на месте.
 
 ## Быстрый старт
 
-1. Склонируйте репозиторий на VPS.
-2. Скопируйте `.env.example` в `.env`.
-3. Для VLESS задайте `REALITY_SERVER_NAME`. Для Hysteria2 задайте `HYSTERIA_DOMAIN`, `LETSENCRYPT_EMAIL` и `HYSTERIA_MASQUERADE_URL`.
-4. Убедитесь, что домен уже указывает на IPv4 этой VPS.
-5. Запустите установку:
+### 1. Подготовьте VPS
+
+Нужна чистая **Ubuntu 22.04, 24.04 или 26.04**, доступ root или `sudo` и публичный
+IPv4. Для Remnawave начальный ориентир — **4 ГБ RAM**; подробности указаны
+в [требованиях](docs/remnawave.ru.md).
+
+Направьте домен панели (Remnawave) и домен Hysteria2, если протокол включён,
+на VPS через DNS **A**-записи. Для Remnawave используйте DNS-only без
+CDN-проксирования и AAAA-записей. Для standalone только с VLESS свой домен не нужен.
+
+Разрешите нужные порты в firewall провайдера:
+
+| Порт по умолчанию | Назначение | Когда нужен |
+| --- | --- | --- |
+| `443/tcp` | VLESS Reality | Включён VLESS |
+| `443/udp` | Hysteria2 | Включён Hysteria2 |
+| `8443/tcp` | Панель и подписки | Remnawave |
+| `80/tcp` | Выпуск и продление Let's Encrypt | Remnawave или standalone с Hysteria2 |
+
+Сохраните доступ к SSH-порту. TCP и UDP могут использовать один номер порта `443`.
+В Remnawave Docker публикует VPN- и HTTPS-порты независимо от UFW;
+ограничения по IP задавайте в firewall провайдера.
+
+Склонируйте или скопируйте репозиторий на VPS и перейдите в его каталог:
 
 ```bash
+git clone https://github.com/n0pav/proxy-bootstrap.git
+cd proxy-bootstrap
+```
+
+### 2. Настройте и установите один режим
+
+#### Remnawave — панель и персональные подписки
+
+```bash
+cp .env.remnawave.example .env
+nano .env
 sudo bash install.sh
 ```
 
-Готовые клиентские ссылки будут записаны в `/etc/sing-box/client-links.txt`.
+В `.env` задайте `PANEL_DOMAIN` и `LETSENCRYPT_EMAIL`. Укажите `REALITY_SERVER_NAME`,
+если включён VLESS, и `HYSTERIA_MASQUERADE_URL`, если включён Hysteria2.
+Пустой `HYSTERIA_DOMAIN` использует домен панели. Если VPS находится за NAT
+облачного провайдера, явно задайте `SERVER_IPV4`.
 
-## Конфигурация (.env)
+Посмотрите сгенерированные данные администратора:
 
-Обязательные переменные:
+```bash
+sudo cat /opt/proxy-bootstrap/remnawave/credentials.txt
+```
 
-- `ENABLE_VLESS`
-- `ENABLE_HYSTERIA`
+Откройте `https://ДОМЕН_ПАНЕЛИ:8443`, войдите и создайте пользователя в группе
+**VPN Users** с нужным сроком действия и лимитами. Скопируйте его персональную
+ссылку подписки в совместимый VPN-клиент. Это подписка на конфигурацию;
+биллинг в неё не входит.
 
-Важные необязательные переменные:
+[Полная инструкция Remnawave →](docs/remnawave.ru.md)
 
-- `ENABLE_VLESS` / `ENABLE_HYSTERIA`: выбрать режим `только VLESS`, `только Hysteria2` или `оба сразу`
-- `VLESS_PORT` / `HYSTERIA_PORT`: TCP и UDP могут одновременно использовать стандартный номер порта `443`
-- `REALITY_FINGERPRINT`: клиентская подсказка uTLS fingerprint; `chrome` используется по умолчанию ради совместимости
-- `HYSTERIA_OBFS_TYPE`: пустое значение, `salamander` или `gecko`
-- `PRIMARY_INTERFACE`: вручную задать исходящий интерфейс для NAT
-- `SERVER_IPV4`: вручную задать IPv4 сервера, если автоопределение не подходит
-- `FIREWALL_BACKEND`: `auto`, `ufw`, `iptables`, `none`
-- `CERTBOT_STAGING`: `true` для тестовых прогонов без риска упереться в rate limits Let's Encrypt
-- `VLESS_UUID`, `REALITY_PRIVATE_KEY`, `REALITY_PUBLIC_KEY`, `REALITY_SHORT_ID`, `HYSTERIA_PASSWORD`, `HYSTERIA_OBFS_PASSWORD`: заранее заданные секреты вместо автогенерации
-
-Зависимости по режимам:
-
-- если `ENABLE_VLESS=true`, обязателен `REALITY_SERVER_NAME`
-- если `ENABLE_HYSTERIA=true`, обязательны `HYSTERIA_DOMAIN`, `LETSENCRYPT_EMAIL` и `HYSTERIA_MASQUERADE_URL`
-- хотя бы один из двух флагов должен быть `true`
-
-Состояние установки и сгенерированные секреты хранятся в `/etc/sing-box/bootstrap.env`.
-
-Значения `.env` с shell-символами заключайте в кавычки, например `HYSTERIA_MASQUERADE_URL='https://example.org/?a=1&b=2'`.
-
-### Настройки маскировки
-
-- У `REALITY_SERVER_NAME` больше нет общего fallback. Для каждой VPS явно выбирайте стабильный target с TLS 1.3 и HTTP/2, желательно сетево близкий к серверу.
-- `REALITY_FINGERPRINT` теперь настраивается, но эмуляция uTLS остаётся fingerprintable: это параметр совместимости клиента, а не гарантия невидимости.
-- Без Hysteria2 obfs неаутентифицированные HTTP/3-запросы проксируются на `HYSTERIA_MASQUERADE_URL`.
-- `salamander` поддерживается стабильным пакетом sing-box. При включённом obfs обычный HTTP/3 probe получит timeout до обработчика masquerade: obfs и masquerade предназначены для разных профилей трафика.
-- `gecko` сейчас требует тестовую ветку sing-box `1.14` и совместимый клиент. До стабильного релиза 1.14 задайте на сервере `SING_BOX_PACKAGE=sing-box-beta`. Режим экспериментальный.
-- Включение или смена obfs требует заново импортировать сгенерированную Hysteria2-ссылку на всех клиентах.
-
-## Установка
+#### Standalone — sing-box и прямые ссылки
 
 ```bash
 cp .env.example .env
@@ -71,95 +105,58 @@ nano .env
 sudo bash install.sh
 ```
 
-Что делает `install.sh`:
-
-- проверяет root, ОС, `.env` и DNS
-- устанавливает базовые пакеты и официальный apt-репозиторий `sing-box`
-- включает `net.ipv4.ip_forward=1`
-- настраивает firewall и NAT без дублирования правил
-- генерирует ключи только если их ещё нет
-- выпускает или переиспользует сертификат `Let's Encrypt`
-- проверяет временный конфиг sing-box и затем атомарно пишет `/etc/sing-box/config.json`
-- включает и запускает `sing-box`
-- запускает `scripts/healthcheck.sh`
-
-Скрипт идемпотентный: повторный запуск должен приводить систему к нужному состоянию, а не ломать существующую установку.
-
-Примеры режимов:
-
-```env
-ENABLE_VLESS=true
-ENABLE_HYSTERIA=false
-```
-
-```env
-ENABLE_VLESS=false
-ENABLE_HYSTERIA=true
-```
-
-```env
-ENABLE_VLESS=true
-ENABLE_HYSTERIA=true
-```
-
-## Обновление
+В `.env` задайте `REALITY_SERVER_NAME` для VLESS. Для Hysteria2 укажите
+`HYSTERIA_DOMAIN`, `LETSENCRYPT_EMAIL` и `HYSTERIA_MASQUERADE_URL`.
+Посмотрите готовые ссылки и импортируйте их в VPN-клиент:
 
 ```bash
-sudo bash update.sh
+sudo cat /etc/sing-box/client-links.txt
 ```
 
-`update.sh` повторно запускает установщик, пытается обновить сертификаты, перезапускает `sing-box` и затем запускает healthcheck.
+[Полная инструкция standalone →](docs/standalone.ru.md)
 
-Перед обновлением старой установки задайте `REALITY_SERVER_NAME`, если VLESS раньше полагался на неявный fallback `github.com`, и добавьте `HYSTERIA_MASQUERADE_URL`, если включён Hysteria2. Явно заданный старый `HYSTERIA_PORT=8443` не изменится; переключите его на `443`, когда клиенты и firewall провайдера будут готовы к миграции.
+Оба примера включают оба протокола. Чтобы отключить один, задайте
+`ENABLE_VLESS=false` или `ENABLE_HYSTERIA=false`; хотя бы один должен остаться
+включённым. Не публикуйте пароли, клиентские ссылки и ссылки подписки.
 
-## Удаление
+## Управление
 
-```bash
-sudo bash uninstall.sh
-```
+Выполняйте команды из каталога репозитория на VPS:
 
-Скрипт удаляет управляемую установку `sing-box`, systemd/NAT-артефакты, managed-конфиги и apt source для SagerNet.
+| Действие | Команда |
+| --- | --- |
+| Проверить работу сервисов | `sudo bash scripts/healthcheck.sh` |
+| Обновить | `sudo bash update.sh` |
+| Удалить | `sudo bash uninstall.sh` |
+| Проверить VPN-трафик через Remnawave | `sudo bash scripts/remnawave.sh smoke-test` |
+| Создать резервную копию Remnawave | `sudo bash scripts/remnawave.sh backup` |
 
-Сертификаты в `/etc/letsencrypt` намеренно не удаляются.
+Перед обновлением Remnawave создаётся копия базы и конфигурации, затем применяются
+закреплённые версии образов. Удаление по умолчанию сохраняет данные; `--purge`
+удаляет управляемые данные после резервного копирования. Удаление standalone
+убирает его управляемую конфигурацию и секреты. Оба режима сохраняют сертификаты
+Let's Encrypt.
 
-## Диагностика
+Перед [восстановлением Remnawave](docs/remnawave.ru.md#обновление-и-резервные-копии)
+или [обновлением старой standalone-установки](docs/standalone.ru.md#обновление)
+посмотрите соответствующую инструкцию.
 
-Основной лог:
+## Документация
 
-```bash
-sudo tail -f /var/log/proxy-bootstrap.log
-```
+| Руководство | 🇺🇸 English | 🇷🇺 Русский |
+| --- | --- | --- |
+| Remnawave: установка, пользователи, подписки, резервные копии и диагностика | [Read](docs/remnawave.md) | [Читать](docs/remnawave.ru.md) |
+| Standalone: конфигурация, маскировка, обновление и диагностика | [Read](docs/standalone.md) | [Читать](docs/standalone.ru.md) |
 
-Логи сервиса:
+## Проверки
 
-```bash
-sudo journalctl -u sing-box -f
-```
+Плашка **Docker: locally tested** отражает выполненный локальный прогон Remnawave.
 
-Ручная проверка:
+- **Пройдено:** 13 автоматических тестов и проверка синтаксиса shell-скриптов.
+- **Пройдено в Docker:** персональные подписки, реальный трафик через оба протокола,
+  восстановление резервной копии и смена сертификата.
+- **Предстоит на VPS:** полная установка на чистой Ubuntu, продление Let's Encrypt
+  и подключение из внешней сети.
 
-```bash
-sudo bash scripts/healthcheck.sh
-```
-
-Полезные команды:
-
-```bash
-sudo systemctl status sing-box --no-pager
-sudo ss -tulpn | grep -E ':(80|443)'
-sudo sing-box check -c /etc/sing-box/config.json
-```
-
-Если не выпускается сертификат:
-
-- проверьте `A`-запись `HYSTERIA_DOMAIN`
-- проверьте, что `80/tcp` доступен снаружи
-- проверьте, что на `80/tcp` не слушает другой процесс
-
-Если не работает `Hysteria2`:
-
-- проверьте доступность настроенного `HYSTERIA_PORT` (по умолчанию `443/udp`)
-- проверьте, что сертификат выписан на `HYSTERIA_DOMAIN`
-- проверьте, что `HYSTERIA_MASQUERADE_URL` доступен с VPS
-- если включён obfs, проверьте совпадение его типа и пароля на клиенте
-- проверьте пароль из `/etc/sing-box/client-links.txt`
+Команды для повторения — в [инструкции по тестированию](docs/remnawave.ru.md#проверки-разработчика).
+Автоматический CI пока не настроен; плашка показывает результат локальной проверки.
